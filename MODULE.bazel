@@ -1,0 +1,6 @@
+bazel_dep(name = "diff.bzl", version = "0.5.5")
+bazel_dep(name = "googleapis", version = "0.0.0-20260402-c8ca5bce", repo_name = "com_google_googleapis")
+bazel_dep(name = "protobuf", version = "34.1")
+bazel_dep(name = "rules_go", version = "0.59.0")
+
+include("//:proto.MODULE.bazel")

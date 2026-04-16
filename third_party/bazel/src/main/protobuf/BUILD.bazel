@@ -1,0 +1,30 @@
+load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
+
+vendored_bazel_protobuf_library(
+    name = "action_cache_proto",
+)
+
+vendored_bazel_protobuf_library(
+    name = "command_line_proto",
+    deps = [":option_filters_proto"],
+)
+
+vendored_bazel_protobuf_library(
+    name = "option_filters_proto",
+)
+
+vendored_bazel_protobuf_library(
+    name = "failure_details_proto",
+    deps = ["@protobuf//:descriptor_proto"],
+)
+
+vendored_bazel_protobuf_library(
+    name = "invocation_policy_proto",
+    deps = [
+        ":strategy_policy_proto",
+    ],
+)
+
+vendored_bazel_protobuf_library(
+    name = "strategy_policy_proto",
+)

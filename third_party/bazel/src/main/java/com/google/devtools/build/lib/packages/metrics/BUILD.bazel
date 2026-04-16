@@ -1,0 +1,6 @@
+load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
+
+vendored_bazel_protobuf_library(
+    name = "package_load_metrics_proto",
+    deps = ["@protobuf//:duration_proto"],
+)

@@ -1,0 +1,52 @@
+BAZEL_SHA = "2dcfaeabb2e7e5966616f638c9a47eb78c39c437"  # 9.0.2
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "bazel__action_cache_proto",
+    integrity = "sha256-nu/0jzV+wtwHYXoKMm/die9hCNa5O8nupVkuy3/4SbM=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/action_cache.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__build_event_stream_proto",
+    integrity = "sha256-8VplLJgE4J+r86d5GeyvMUdQ5Ufaq8dXL9D60FgXQxY=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/java/com/google/devtools/build/lib/buildeventstream/proto/build_event_stream.proto".format(BAZEL_SHA),
+    # downloaded_file_path = "build_event_stream.proto",
+)
+
+http_file(
+    name = "bazel__command_line_proto",
+    integrity = "sha256-utTR/EO+ks16cP80FNTkx8PxhD7Vfsp124S0rjDH+jM=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/command_line.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__failure_details_proto",
+    integrity = "sha256-FDVX2V3h+GA1QL093zTfqNVBuu6V71YhSlLdNUrZDg4=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/failure_details.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__invocation_policy_proto",
+    integrity = "sha256-vtAAjmn7xTe8kSdTu/I4ldnP/Uocl62/QfKQgidPUjs=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/invocation_policy.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__option_filters_proto",
+    integrity = "sha256-yOkqilvkVIT3BeSr5PKj1LXHfJlHe1ziKGrdh+1k8sw=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/option_filters.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__package_load_metrics_proto",
+    integrity = "sha256-Z5E1zTGLHhO5IN7RUJTcgKNIO7DDRRTa6qCYtf4zQ3U=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto".format(BAZEL_SHA),
+)
+
+http_file(
+    name = "bazel__strategy_policy_proto",
+    integrity = "sha256-AGjiMiO+aPVd3DbWORbvrpuPZPHLrlsCusYFm1sDLU0=",
+    url = "https://raw.githubusercontent.com/bazelbuild/bazel/{}/src/main/protobuf/strategy_policy.proto".format(BAZEL_SHA),
+)
