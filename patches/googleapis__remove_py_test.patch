@@ -1,0 +1,21 @@
+diff --git a/google/devtools/build/v1/BUILD.bazel b/google/devtools/build/v1/BUILD.bazel
+index 25fadfc..9b0ec61 100644
+--- a/google/devtools/build/v1/BUILD.bazel
++++ b/google/devtools/build/v1/BUILD.bazel
+@@ -165,16 +165,6 @@ py_gapic_library(
+     transport = "grpc",
+ )
+ 
+-py_test(
+-    name = "build_py_gapic_test",
+-    srcs = [
+-        "build_py_gapic_pytest.py",
+-        "build_py_gapic_test.py",
+-    ],
+-    legacy_create_init = False,
+-    deps = [":build_py_gapic"],
+-)
+-
+ # Open Source Packages
+ py_gapic_assembly_pkg(
+     name = "devtools-build-v1-py",

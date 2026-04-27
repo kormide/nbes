@@ -1,0 +1,15 @@
+load(
+    "@rules_rs//rs:rust_binary.bzl",
+    "rust_binary",
+)
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
+
+rust_binary(
+    name = "bin",
+    srcs = glob(["src/**/*.rs"])
+)
+
+rust_prost_library(
+    name = "build_rust_proto",
+    proto = "@com_google_googleapis//google/devtools/build/v1:build_proto",
+)
