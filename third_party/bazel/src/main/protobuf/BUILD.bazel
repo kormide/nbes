@@ -1,7 +1,13 @@
 load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
 
 vendored_bazel_protobuf_library(
     name = "action_cache_proto",
+)
+
+rust_prost_library(
+    name = "action_cache_rust_proto",
+    proto = ":action_cache_proto",
 )
 
 vendored_bazel_protobuf_library(
@@ -9,13 +15,28 @@ vendored_bazel_protobuf_library(
     deps = [":option_filters_proto"],
 )
 
+rust_prost_library(
+    name = "command_line_rust_proto",
+    proto = ":command_line_proto",
+)
+
 vendored_bazel_protobuf_library(
     name = "option_filters_proto",
+)
+
+rust_prost_library(
+    name = "option_filters_rust_proto",
+    proto = ":option_filters_proto",
 )
 
 vendored_bazel_protobuf_library(
     name = "failure_details_proto",
     deps = ["@protobuf//:descriptor_proto"],
+)
+
+rust_prost_library(
+    name = "failure_details_rust_proto",
+    proto = ":failure_details_proto",
 )
 
 vendored_bazel_protobuf_library(
@@ -25,6 +46,16 @@ vendored_bazel_protobuf_library(
     ],
 )
 
+rust_prost_library(
+    name = "invocation_policy_rust_proto",
+    proto = ":invocation_policy_proto",
+)
+
 vendored_bazel_protobuf_library(
     name = "strategy_policy_proto",
+)
+
+rust_prost_library(
+    name = "strategy_policy_rust_proto",
+    proto = ":strategy_policy_proto",
 )

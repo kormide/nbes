@@ -1,6 +1,12 @@
 load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
 
 vendored_bazel_protobuf_library(
     name = "package_load_metrics_proto",
     deps = ["@protobuf//:duration_proto"],
+)
+
+rust_prost_library(
+    name = "package_load_metrics_rust_proto",
+    proto = ":package_load_metrics_proto",
 )

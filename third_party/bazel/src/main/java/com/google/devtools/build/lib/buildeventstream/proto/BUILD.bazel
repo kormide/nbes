@@ -1,4 +1,5 @@
 load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
 
 vendored_bazel_protobuf_library(
     name = "build_event_stream_proto",
@@ -12,4 +13,9 @@ vendored_bazel_protobuf_library(
         "@protobuf//:duration_proto",
         "@protobuf//:timestamp_proto",
     ],
+)
+
+rust_prost_library(
+    name = "build_event_stream_rust_proto",
+    proto = ":build_event_stream_proto",
 )

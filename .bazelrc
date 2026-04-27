@@ -1,0 +1,6 @@
+common --enable_platform_specific_config
+common:linux --host_platform=//platforms:local_gnu
+
+# Needed for rules_rs usage.
+# See https://github.com/hermeticbuild/hermetic-llvm/issues/180#issuecomment-3725954347
+common --@llvm//config:experimental_stub_libgcc_s
