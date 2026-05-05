@@ -38,9 +38,21 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
+rules_rust = use_extension("@rules_rs//rs:rules_rust.bzl", "rules_rust")
+use_repo(rules_rust, "rules_rust")
+
 rules_rust_prost = use_extension("@rules_rs//rs:rules_rust_prost.bzl", "rules_rust_prost")
 use_repo(rules_rust_prost, "rules_rust_prost")
 
-register_toolchains("@rules_rust_prost//:default_prost_toolchain")
+crate.annotation(
+    crate = "protoc-gen-prost",
+    gen_binaries = ["protoc-gen-prost"],
+)
+crate.annotation(
+    crate = "protoc-gen-tonic",
+    gen_binaries = ["protoc-gen-tonic"],
+)
+
+register_toolchains("//tools/prost:prost_toolchain")
 
 include("//:proto.MODULE.bazel")
