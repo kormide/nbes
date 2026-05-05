@@ -6,5 +6,11 @@ load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
 
 rust_binary(
     name = "bin",
-    srcs = glob(["src/**/*.rs"])
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "@crates//:futures-core",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
+    ]
 )

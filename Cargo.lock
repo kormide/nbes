@@ -435,12 +435,14 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 name = "nbes"
 version = "0.1.0"
 dependencies = [
+ "futures-core",
  "prost",
  "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
  "tokio",
  "tonic",
+ "tonic-prost",
 ]
 
 [[package]]
@@ -838,6 +840,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tonic-prost"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a55376a0bbaa4975a3f10d009ad763d8f4108f067c7c2e74f3001fb49778d309"
+dependencies = [
+ "bytes",
+ "prost",
+ "tonic",
 ]
 
 [[package]]

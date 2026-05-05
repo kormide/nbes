@@ -1,0 +1,7 @@
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
+
+rust_prost_library(
+    name = "build_rust_proto",
+    proto = "@com_google_googleapis//google/devtools/build/v1:build_proto",
+    visibility = ["//visibility:public"],
+)
