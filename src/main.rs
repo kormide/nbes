@@ -2,18 +2,18 @@
 
 use std::pin::Pin;
 
+use futures::{Stream, stream::unfold};
+
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Error, Server},
 };
 // use build_event_stream_rust_proto::java::com::google::devtools::build::lib::buildeventstream::proto::{}
 use build_proto::google::devtools::build::v1::{
-    PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
+    OrderedBuildEvent, PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
     PublishLifecycleEventRequest,
     publish_build_event_server::{PublishBuildEvent, PublishBuildEventServer},
 };
-
-use futures_core::Stream;
 
 struct BuildEventService {}
 
@@ -27,9 +27,47 @@ impl PublishBuildEvent for BuildEventService {
 
     async fn publish_build_tool_event_stream(
         &self,
-        _request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
+        request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
-        todo!()
+        struct State {
+            incoming: Streaming<PublishBuildToolEventStreamRequest>,
+        }
+
+        let state = State {
+            incoming: request.into_inner(),
+        };
+
+        Ok(Response::new(Box::pin(unfold(
+            state,
+            |mut state| async move {
+                let msg = state
+                    .incoming
+                    .message()
+                    .await
+                    .expect("failed to receive message");
+
+                if let Some(PublishBuildToolEventStreamRequest {
+                    ordered_build_event:
+                        Some(OrderedBuildEvent {
+                            stream_id,
+                            sequence_number,
+                            ..
+                        }),
+                    ..
+                }) = msg
+                {
+                    return Some((
+                        Ok(PublishBuildToolEventStreamResponse {
+                            stream_id,
+                            sequence_number,
+                        }),
+                        state,
+                    ));
+                }
+
+                None
+            },
+        ))))
     }
 
     async fn publish_lifecycle_event(
