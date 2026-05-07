@@ -23,9 +23,10 @@ pub struct Args {
     #[arg(long = "bes_backend")]
     pub bes_backend: Option<Vec<BesBackendArg>>,
 
-    /// Port serving the BES backend
-    #[arg(short, long, default_value_t = 9000)]
-    pub port: u16,
+    /// Port serving the BES backend. Defaults to the value of the env var
+    /// NBES_PORT or 9000 if not specified.
+    #[arg(short, long)]
+    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug)]

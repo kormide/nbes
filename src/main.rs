@@ -6,7 +6,7 @@ use build_proto::google::devtools::build::v1::{
 };
 use clap::Parser;
 use futures::{Stream, stream::unfold};
-use std::pin::Pin;
+use std::{env, pin::Pin};
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Error, Server},
@@ -79,9 +79,24 @@ impl PublishBuildEvent for BuildEventService {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    const DEFAULT_PORT: u16 = 9000;
+
     let args = Args::parse();
 
-    let address = format!("0.0.0.0:{}", args.port)
+    let port = args
+        .port
+        .or_else(|| {
+            env::var("NBES_PORT").ok().and_then(|port| {
+                port.parse::<u16>()
+                    .inspect_err(|_| {
+                        eprintln!("failed to parse NBES_PORT env var, defaulting to {DEFAULT_PORT}")
+                    })
+                    .ok()
+            })
+        })
+        .unwrap_or(DEFAULT_PORT);
+
+    let address = format!("0.0.0.0:{}", port)
         .parse()
         .expect("failed to parse socket address");
 
