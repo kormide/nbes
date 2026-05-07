@@ -21,12 +21,16 @@ pub struct Args {
     ///
     /// Multiple backends can be configured by repeating the argument.
     #[arg(long = "bes_backend")]
-    bes_backend: Option<Vec<BesBackendArg>>,
+    pub bes_backend: Option<Vec<BesBackendArg>>,
+
+    /// Port serving the BES backend
+    #[arg(short, long, default_value_t = 9000)]
+    pub port: u16,
 }
 
 #[derive(Clone, Debug)]
 #[allow(unused)]
-struct BesBackendArg {
+pub struct BesBackendArg {
     name: String,
     endpoint: Url,
 }

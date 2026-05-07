@@ -79,13 +79,13 @@ impl PublishBuildEvent for BuildEventService {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let _args = Args::parse();
+    let args = Args::parse();
 
-    let address = "0.0.0.0:6001"
+    let address = format!("0.0.0.0:{}", args.port)
         .parse()
         .expect("failed to parse socket address");
 
-    eprintln!("starting grpc server on {address}");
+    eprintln!("starting bes server on {address}");
 
     Server::builder()
         .add_service(PublishBuildEventServer::new(BuildEventService {}))
