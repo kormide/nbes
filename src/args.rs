@@ -11,11 +11,13 @@ pub struct Args {
     /// A BES backend to forward events to. In the simplest form, this
     /// can be a grpc endpoint. E.g.,
     ///
-    /// --bes_backend=grpc://<ENDPOINT>:<PORT>
+    /// --bes_backend=[SCHEME://]HOST[:PORT]
     ///
-    /// For additional properties, use the comma-separated value form:
+    /// The scheme may be grpc or grpcs. The default scheme/port is grpcs/443.
     ///
-    /// --bes_backend=name=my-bes-service,endpoint=grpc://<ENDPOINT>:<PORT>
+    /// To set additional properties for the backend, use the comma-separated value form:
+    ///
+    /// --bes_backend=name=my-bes-service,endpoint=[SCHEME://]HOST[:PORT]
     ///
     /// Multiple backends can be configured by repeating the argument.
     #[arg(long = "bes_backend")]
@@ -47,22 +49,35 @@ impl FromStr for BesBackendArg {
             })?;
         };
 
-        let endpoint = if arg_map.len() > 0 {
+        let mut endpoint = if arg_map.len() > 0 {
             arg_map
                 .remove("endpoint")
                 .ok_or_else(|| Error::new(ErrorKind::MissingRequiredArgument))?
         } else {
             s
         }
-        .parse()
-        .map_err(|_| Error::new(ErrorKind::InvalidValue))
-        .and_then(|url: Url| {
-            if !["grpc", "grpcs"].contains(&url.scheme()) {
-                Err(Error::new(ErrorKind::InvalidValue))
-            } else {
+        .to_string();
+
+        // A missing scheme is not a valid Url, so prepend the
+        // default before parsing
+        if !endpoint.contains("://") {
+            endpoint.insert_str(0, "grpcs://");
+        }
+
+        let endpoint = endpoint
+            .parse()
+            .map_err(|_| Error::new(ErrorKind::InvalidValue))
+            .and_then(|mut url: Url| {
+                if !["grpc", "grpcs"].contains(&url.scheme()) {
+                    return Err(Error::new(ErrorKind::InvalidValue));
+                }
+                if url.port().is_none() {
+                    url.set_port(Some(443))
+                        .map_err(|_| Error::new(ErrorKind::InvalidValue))?;
+                }
+
                 Ok(url)
-            }
-        })?;
+            })?;
 
         Ok(BesBackendArg {
             name: arg_map.remove("name").map(String::from).unwrap_or_else(|| {
@@ -96,20 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_bes_backend_arg_as_endpoint_invalid_url() {
-        let result = "foobar".parse::<BesBackendArg>();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_bes_backend_arg_as_endpoint_invalid_scheme() {
-        let result = "foo://127.0.0.1:6000".parse::<BesBackendArg>();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn parse_bes_backend_arg_as_endpoint_generates_name() {
         let result = "grpc://127.0.0.1:6000".parse::<BesBackendArg>();
 
@@ -118,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bes_backend_arg() {
+    fn parse_bes_backend() {
         let result = "name=foobar,endpoint=grpc://127.0.0.1:6000".parse::<BesBackendArg>();
 
         assert!(result.is_ok());
@@ -131,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_bes_backend_arg_generates_name() {
+    fn parse_bes_backend_generates_name() {
         let result = "endpoint=grpc://127.0.0.1:6000".parse::<BesBackendArg>();
 
         assert!(result.is_ok());
@@ -149,5 +150,28 @@ mod tests {
             .unwrap();
 
         assert!(b1.name != b2.name);
+    }
+
+    #[test]
+    fn parse_bes_backend_endpoint_invalid_scheme() {
+        let result = "foo://127.0.0.1:6000".parse::<BesBackendArg>();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bes_backend_endpoint_defaults_scheme() {
+        let result = "127.0.0.1:6000".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        assert_eq!("grpcs", result.unwrap().endpoint.scheme());
+    }
+
+    #[test]
+    fn parse_bes_backend_endpoint_defaults_port() {
+        let result = "grpc://127.0.0.1".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        assert_eq!(443, result.unwrap().endpoint.port().unwrap());
     }
 }
