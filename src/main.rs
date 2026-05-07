@@ -1,19 +1,18 @@
-// use std::net::{SocketAddr, SocketAddrV4};
-
-use std::pin::Pin;
-
-use futures::{Stream, stream::unfold};
-
-use tonic::{
-    Request, Response, Status, Streaming,
-    transport::{Error, Server},
-};
-// use build_event_stream_rust_proto::java::com::google::devtools::build::lib::buildeventstream::proto::{}
+use args::Args;
 use build_proto::google::devtools::build::v1::{
     OrderedBuildEvent, PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
     PublishLifecycleEventRequest,
     publish_build_event_server::{PublishBuildEvent, PublishBuildEventServer},
 };
+use clap::Parser;
+use futures::{Stream, stream::unfold};
+use std::pin::Pin;
+use tonic::{
+    Request, Response, Status, Streaming,
+    transport::{Error, Server},
+};
+
+mod args;
 
 struct BuildEventService {}
 
@@ -80,7 +79,9 @@ impl PublishBuildEvent for BuildEventService {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let address = "0.0.0.0:6000"
+    let _args = Args::parse();
+
+    let address = "0.0.0.0:6001"
         .parse()
         .expect("failed to parse socket address");
 
