@@ -1,7 +1,7 @@
-use std::{collections::HashMap, str::FromStr};
-
+use crate::BesBackend;
 use clap::{Error, Parser, error::ErrorKind};
 use rand::{RngExt, distr::Alphabetic};
+use std::{collections::HashMap, str::FromStr};
 use url::Url;
 
 /// A BES backend that forwards to other BES backends
@@ -21,7 +21,7 @@ pub struct Args {
     ///
     /// Multiple backends can be configured by repeating the argument.
     #[arg(long = "bes_backend")]
-    pub bes_backend: Option<Vec<BesBackendArg>>,
+    pub bes_backends: Vec<BesBackendArg>,
 
     /// Port serving the BES backend. Defaults to the value of the env var
     /// NBES_PORT or 9000 if not specified.
@@ -30,7 +30,6 @@ pub struct Args {
 }
 
 #[derive(Clone, Debug)]
-#[allow(unused)]
 pub struct BesBackendArg {
     name: String,
     endpoint: Url,
@@ -95,6 +94,15 @@ impl FromStr for BesBackendArg {
             }),
             endpoint,
         })
+    }
+}
+
+impl Into<BesBackend> for BesBackendArg {
+    fn into(self) -> BesBackend {
+        BesBackend {
+            name: self.name,
+            endpoint: self.endpoint,
+        }
     }
 }
 
