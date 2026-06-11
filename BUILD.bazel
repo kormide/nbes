@@ -15,6 +15,7 @@ rust_binary(
         "@crates//:clap",
         "@crates//:futures",
         "@crates//:rand",
+        "@crates//:rustls",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:url",

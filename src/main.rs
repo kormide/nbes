@@ -7,10 +7,13 @@ use build_proto::google::devtools::build::v1::{
 };
 use clap::Parser;
 use futures::{Stream, stream::unfold};
-use std::{env, pin::Pin, str::FromStr};
+use rustls::crypto::CryptoProvider;
+use std::{env, pin::Pin, str::FromStr, time::Duration};
 use tonic::{
     Request, Response, Status, Streaming,
-    transport::{Endpoint, Error, Server},
+    codec::CompressionEncoding,
+    metadata::{KeyRef, MetadataValue},
+    transport::{Channel, ClientTlsConfig, Endpoint, Error, Server},
 };
 use url::Url;
 
@@ -18,6 +21,8 @@ mod args;
 
 struct NBesService {
     backends: Vec<BesBackend>,
+    channels: Vec<Channel>,
+    clients: Vec<PublishBuildEventClient<Channel>>,
 }
 
 struct BesBackend {
@@ -33,11 +38,38 @@ impl NBesService {
     pub fn new() -> Self {
         Self {
             backends: Vec::default(),
+            channels: Vec::default(),
+            clients: Vec::default(),
         }
     }
 
     pub fn add_backend(&mut self, bes_backend: BesBackend) {
         self.backends.push(bes_backend);
+    }
+
+    pub async fn connect(&mut self) -> Result<(), Status> {
+        for backend in self.backends.iter() {
+            eprintln!("{}", backend.endpoint);
+            let channel = Endpoint::from_str(backend.endpoint.as_str())
+                .map_err(|e| Status::internal(e.to_string()))?
+                .tls_config(ClientTlsConfig::default())
+                .map_err(|e| Status::internal(e.to_string()))?
+                .tcp_keepalive(Some(Duration::from_secs(1)))
+                .connect()
+                .await
+                .map_err(|e| Status::unavailable(e.to_string()))?;
+
+            eprintln!("{:#?}", channel);
+
+            self.channels.push(channel.clone());
+            let client = PublishBuildEventClient::new(channel)
+                .max_decoding_message_size(1024 * 1024 * 100)
+                .max_encoding_message_size(1024 * 1024 * 100)
+                .send_compressed(CompressionEncoding::Gzip);
+            self.clients.push(client);
+        }
+
+        Ok(())
     }
 }
 
@@ -53,7 +85,7 @@ impl PublishBuildEvent for NBesService {
             incoming: Streaming<PublishBuildToolEventStreamRequest>,
         }
 
-        let state = State {
+        let mut state = State {
             incoming: request.into_inner(),
         };
 
@@ -76,6 +108,7 @@ impl PublishBuildEvent for NBesService {
                     ..
                 }) = msg
                 {
+                    eprintln!("{sequence_number}");
                     return Some((
                         Ok(PublishBuildToolEventStreamResponse {
                             stream_id,
@@ -94,18 +127,40 @@ impl PublishBuildEvent for NBesService {
         &self,
         request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
+        let headers = request.metadata().clone();
+        eprintln!("*** {request:#?}");
         let request = request.into_inner();
-        for backend in &self.backends {
-            let channel = Endpoint::from_str(backend.endpoint.as_str())
-                .map_err(|e| Status::internal(e.to_string()))?
-                .connect()
-                .await
-                .map_err(|e| Status::unavailable(e.to_string()))?;
+        for i in 0..self.backends.len() {
+            eprintln!("backend: {}", self.backends[i].endpoint);
 
-            let mut client = PublishBuildEventClient::new(channel);
-            client
-                .publish_lifecycle_event(Request::new(request.clone()))
-                .await?;
+            //let mut client = PublishBuildEventClient::new(self.channels[i].clone())
+            //   .max_decoding_message_size(1024 * 1024 * 16);
+            //eprintln!("{request:#?}");
+            let mut request = Request::new(PublishLifecycleEventRequest { ..request.clone() });
+            request.metadata_mut().insert(
+                "x-buildbuddy-api-key",
+                MetadataValue::from_static("af825193-d232-40a5-a9b0-7efecdd288"),
+            );
+            for key in headers.keys() {
+                match key {
+                    KeyRef::Ascii(key) => {
+                        request
+                            .metadata_mut()
+                            .append(key, headers.get(key).expect("").clone());
+                    }
+                    KeyRef::Binary(key) => {
+                        request
+                            .metadata_mut()
+                            .append_bin(key, headers.get_bin(key).expect("").clone());
+                    }
+                }
+            }
+            eprintln!("{request:#?}");
+            self.clients[i]
+                .clone()
+                .publish_lifecycle_event(request)
+                .await
+                .inspect_err(|e| eprintln!("{e}"))?;
         }
 
         Ok(Response::new(()))
@@ -115,6 +170,9 @@ impl PublishBuildEvent for NBesService {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     const DEFAULT_PORT: u16 = 9000;
+
+    CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .expect("failed to install crypto provider");
 
     let args = Args::parse();
 
@@ -155,6 +213,13 @@ async fn main() -> Result<(), Error> {
     if nbes_service.backends.is_empty() {
         eprintln!("no bes backends configured; bes events will be swallowed by a black hole");
     }
+
+    nbes_service
+        .connect()
+        .await
+        .expect("failed to connect to bes backends");
+
+    eprintln!("connected to {} bes backends", nbes_service.backends.len());
 
     Server::builder()
         .add_service(PublishBuildEventServer::new(nbes_service))
