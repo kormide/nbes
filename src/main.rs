@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use args::Args;
 use build_proto::google::devtools::build::v1::{
     OrderedBuildEvent, PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
@@ -10,14 +11,14 @@ use futures::{Stream, stream::unfold};
 use std::{env, pin::Pin, str::FromStr};
 use tonic::{
     Request, Response, Status, Streaming,
-    transport::{Endpoint, Error, Server},
+    transport::{Channel, Endpoint, Server},
 };
 use url::Url;
 
 mod args;
 
 struct NBesService {
-    backends: Vec<BesBackend>,
+    clients: Vec<PublishBuildEventClient<Channel>>,
 }
 
 struct BesBackend {
@@ -29,15 +30,31 @@ type PublishBuildToolEventStreamStream = Pin<
     Box<dyn Stream<Item = Result<PublishBuildToolEventStreamResponse, Status>> + Send + 'static>,
 >;
 
+impl BesBackend {
+    /// Open a gRPC channel and create a client for the bes backend.
+    pub async fn connect(&self) -> Result<PublishBuildEventClient<Channel>> {
+        let channel = Endpoint::from_str(self.endpoint.as_str())
+            .context(format!(
+                "failed to parse endpoint for backend {}",
+                self.name
+            ))?
+            .connect()
+            .await
+            .context(format!("falied to connect to backend {}", self.name))?;
+
+        Ok(PublishBuildEventClient::new(channel))
+    }
+}
+
 impl NBesService {
     pub fn new() -> Self {
         Self {
-            backends: Vec::default(),
+            clients: Vec::default(),
         }
     }
 
-    pub fn add_backend(&mut self, bes_backend: BesBackend) {
-        self.backends.push(bes_backend);
+    pub fn add_client(&mut self, client: PublishBuildEventClient<Channel>) {
+        self.clients.push(client);
     }
 }
 
@@ -95,15 +112,9 @@ impl PublishBuildEvent for NBesService {
         request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
         let request = request.into_inner();
-        for backend in &self.backends {
-            let channel = Endpoint::from_str(backend.endpoint.as_str())
-                .map_err(|e| Status::internal(e.to_string()))?
-                .connect()
-                .await
-                .map_err(|e| Status::unavailable(e.to_string()))?;
-
-            let mut client = PublishBuildEventClient::new(channel);
+        for client in &self.clients {
             client
+                .clone() // cloning client is cheap
                 .publish_lifecycle_event(Request::new(request.clone()))
                 .await?;
         }
@@ -113,7 +124,7 @@ impl PublishBuildEvent for NBesService {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<()> {
     const DEFAULT_PORT: u16 = 9000;
 
     let args = Args::parse();
@@ -137,27 +148,33 @@ async fn main() -> Result<(), Error> {
 
     eprintln!("starting bes server on {address}");
 
-    let bes_backends = args
-        .bes_backends
-        .into_iter()
-        .map(|b| Into::<BesBackend>::into(b));
+    let bes_backends: Vec<BesBackend> = args.bes_backends.into_iter().map(|b| b.into()).collect();
 
     let mut nbes_service = NBesService::new();
 
-    for backend in bes_backends {
+    if bes_backends.is_empty() {
+        eprintln!("no bes backends configured; bes events will be swallowed by a black hole");
+    }
+
+    for backend in &bes_backends {
         eprintln!(
             "configured backend {} -> {}",
             backend.name, backend.endpoint
         );
-        nbes_service.add_backend(backend);
     }
 
-    if nbes_service.backends.is_empty() {
-        eprintln!("no bes backends configured; bes events will be swallowed by a black hole");
+    for backend in bes_backends {
+        let client = backend.connect().await?;
+
+        eprintln!("connected to backend {}", backend.name,);
+
+        nbes_service.add_client(client);
     }
 
     Server::builder()
         .add_service(PublishBuildEventServer::new(nbes_service))
         .serve(address)
-        .await
+        .await?;
+
+    Ok(())
 }
