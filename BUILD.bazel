@@ -17,6 +17,7 @@ rust_binary(
         "@crates//:futures",
         "@crates//:rand",
         "@crates//:tokio",
+        "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:url",
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
