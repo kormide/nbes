@@ -37,16 +37,25 @@ type PublishBuildToolEventStreamStream = Pin<
 >;
 
 impl BesBackend {
-    /// Open a gRPC channel and create a client for the bes backend.
-    pub async fn connect(&self) -> Result<PublishBuildEventClient<Channel>> {
+    /// Set up a client for a gRPC channel to the bes backend that does not
+    /// connect until first use.
+    pub fn lazy_connect(&self) -> Result<PublishBuildEventClient<Channel>> {
         let channel = Endpoint::from_str(self.endpoint.as_str())
             .context(format!(
                 "failed to parse endpoint for backend {}",
                 self.name
             ))?
-            .connect()
-            .await
-            .context(format!("falied to connect to backend {}", self.name))?;
+            // TODO: properties to potentially configure
+            // .connect_timeout(Duration::from_secs(10))
+            // .tcp_keepalive(tcp_keepalive)
+            // .tcp_keepalive_interval(tcp_keepalive_interval)
+            // .tcp_keepalive_retries(tcp_keepalive_retries)
+            // .concurrency_limit(limit)
+            // .rate_limit(limit, duration)
+            // .http2_keep_alive_interval(interval)
+            // .keep_alive_while_idle(enabled)
+            // .keep_alive_timeout(duration)
+            .connect_lazy();
 
         Ok(PublishBuildEventClient::new(channel))
     }
@@ -213,14 +222,7 @@ async fn main() -> Result<()> {
             "configured backend {} -> {}",
             backend.name, backend.endpoint
         );
-    }
-
-    for backend in bes_backends {
-        let client = backend.connect().await?;
-
-        eprintln!("connected to backend {}", backend.name,);
-
-        nbes_service.add_client(client);
+        nbes_service.add_client(backend.lazy_connect()?);
     }
 
     Server::builder()
