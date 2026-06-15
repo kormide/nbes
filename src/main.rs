@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{
     Request, Response, Status, Streaming,
+    metadata::{KeyAndValueRef, MetadataMap},
     transport::{Channel, Endpoint, Server},
 };
 use url::Url;
@@ -88,6 +89,8 @@ impl PublishBuildEvent for NBesService {
             incoming_responses: Vec<Streaming<PublishBuildToolEventStreamResponse>>,
         }
 
+        let (metadata, _, incoming_requests) = request.into_parts();
+
         // Open streams to each of the bes backends. Incoming requests are sent
         // via a broadcast channel. Each backend turns its receiver into a stream
         // to forward requests to the backend.
@@ -102,9 +105,13 @@ impl PublishBuildEvent for NBesService {
                     // so just panic.
                     request.expect("failed to receive request from broadcast channel")
                 });
+
+                let mut request = Request::new(outbound_requests);
+                copy_request_metadata(&metadata, &mut request);
+
                 client
                     .clone() // cloning clients is cheap
-                    .publish_build_tool_event_stream(Request::new(outbound_requests))
+                    .publish_build_tool_event_stream(request)
                     .await
                     .expect("failed to initiate stream")
                     .into_inner()
@@ -113,7 +120,7 @@ impl PublishBuildEvent for NBesService {
             .await;
 
         let state = State {
-            incoming_requests: request.into_inner(),
+            incoming_requests,
             incoming_responses,
         };
 
@@ -172,15 +179,31 @@ impl PublishBuildEvent for NBesService {
         &self,
         request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        let request = request.into_inner();
+        let (metadata, _, message) = request.into_parts();
+
         for client in &self.clients {
+            let mut outbound_request = Request::new(message.clone());
+            copy_request_metadata(&metadata, &mut outbound_request);
             client
                 .clone() // cloning client is cheap
-                .publish_lifecycle_event(Request::new(request.clone()))
+                .publish_lifecycle_event(outbound_request)
                 .await?;
         }
 
         Ok(Response::new(()))
+    }
+}
+
+fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>) {
+    for header in metadata.iter() {
+        match header {
+            KeyAndValueRef::Ascii(key, value) => {
+                to_request.metadata_mut().append(key, value.clone());
+            }
+            KeyAndValueRef::Binary(key, value) => {
+                to_request.metadata_mut().append_bin(key, value.clone());
+            }
+        }
     }
 }
 
