@@ -219,12 +219,12 @@ impl PublishBuildEvent for NBesService {
                                 }
                             }
                             None => {
-                                return Some((
-                                    Err(Status::internal(format!(
-                                        "bes backend {backend_name} unexpectedly ended stream {stream_id:?}",
-                                    ))),
-                                    state,
-                                ));
+                                eprintln!(
+                                    "bes backend {backend_name} unexpectedly ended stream {stream_id:?}"
+                                );
+                                // End the stream for all backends. Consider making this more fault
+                                // tolerant and continue the other streams?
+                                return None;
                             }
                         };
                     }
