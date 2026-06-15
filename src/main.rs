@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use args::Args;
 use build_proto::google::devtools::build::v1::{
-    PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
+    OrderedBuildEvent, PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
     PublishLifecycleEventRequest,
     publish_build_event_client::PublishBuildEventClient,
     publish_build_event_server::{PublishBuildEvent, PublishBuildEventServer},
@@ -25,12 +25,13 @@ use url::Url;
 mod args;
 
 struct NBesService {
-    clients: Vec<PublishBuildEventClient<Channel>>,
+    backends: Vec<BesBackend>,
 }
 
 struct BesBackend {
     name: String,
     endpoint: Url,
+    client: Option<PublishBuildEventClient<Channel>>,
 }
 
 type PublishBuildToolEventStreamStream = Pin<
@@ -40,37 +41,44 @@ type PublishBuildToolEventStreamStream = Pin<
 impl BesBackend {
     /// Set up a client for a gRPC channel to the bes backend that does not
     /// connect until first use.
-    pub fn lazy_connect(&self) -> Result<PublishBuildEventClient<Channel>> {
-        let channel = Endpoint::from_str(self.endpoint.as_str())
-            .context(format!(
-                "failed to parse endpoint for backend {}",
-                self.name
-            ))?
-            // TODO: properties to potentially configure
-            // .connect_timeout(Duration::from_secs(10))
-            // .tcp_keepalive(tcp_keepalive)
-            // .tcp_keepalive_interval(tcp_keepalive_interval)
-            // .tcp_keepalive_retries(tcp_keepalive_retries)
-            // .concurrency_limit(limit)
-            // .rate_limit(limit, duration)
-            // .http2_keep_alive_interval(interval)
-            // .keep_alive_while_idle(enabled)
-            // .keep_alive_timeout(duration)
-            .connect_lazy();
+    pub fn lazy_connect(&mut self) -> Result<()> {
+        Ok(match self.client {
+            Some(_) => {}
+            None => {
+                let channel = Endpoint::from_str(self.endpoint.as_str())
+                    .context(format!(
+                        "failed to parse endpoint for backend {}",
+                        self.name
+                    ))?
+                    // TODO: properties to potentially configure
+                    // .connect_timeout(Duration::from_secs(10))
+                    // .tcp_keepalive(tcp_keepalive)
+                    // .tcp_keepalive_interval(tcp_keepalive_interval)
+                    // .tcp_keepalive_retries(tcp_keepalive_retries)
+                    // .concurrency_limit(limit)
+                    // .rate_limit(limit, duration)
+                    // .http2_keep_alive_interval(interval)
+                    // .keep_alive_while_idle(enabled)
+                    // .keep_alive_timeout(duration)
+                    .connect_lazy();
 
-        Ok(PublishBuildEventClient::new(channel))
+                self.client.replace(PublishBuildEventClient::new(channel));
+            }
+        })
     }
 }
 
 impl NBesService {
     pub fn new() -> Self {
         Self {
-            clients: Vec::default(),
+            backends: Vec::default(),
         }
     }
 
-    pub fn add_client(&mut self, client: PublishBuildEventClient<Channel>) {
-        self.clients.push(client);
+    pub fn add_backend(&mut self, mut backend: BesBackend) -> Result<()> {
+        backend.lazy_connect()?;
+        self.backends.push(backend);
+        Ok(())
     }
 }
 
@@ -86,7 +94,7 @@ impl PublishBuildEvent for NBesService {
             /// Incoming request stream from Bazel
             incoming_requests: Streaming<PublishBuildToolEventStreamRequest>,
             /// Incoming response streams from the bes backends
-            incoming_responses: Vec<Streaming<PublishBuildToolEventStreamResponse>>,
+            incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
         }
 
         let (metadata, _, incoming_requests) = request.into_parts();
@@ -95,8 +103,8 @@ impl PublishBuildEvent for NBesService {
         // via a broadcast channel. Each backend turns its receiver into a stream
         // to forward requests to the backend.
         let (tx, _) = broadcast::channel::<PublishBuildToolEventStreamRequest>(256);
-        let incoming_responses = stream::iter(self.clients.iter())
-            .then(|client| async {
+        let incoming_responses = stream::iter(self.backends.iter())
+            .then(|backend| async {
                 let receiver = tx.subscribe();
                 let outbound_requests = BroadcastStream::new(receiver).map(|request| {
                     // BroadcastStream wraps the request in a Result in case it fails to
@@ -109,12 +117,18 @@ impl PublishBuildEvent for NBesService {
                 let mut request = Request::new(outbound_requests);
                 copy_request_metadata(&metadata, &mut request);
 
-                client
-                    .clone() // cloning clients is cheap
-                    .publish_build_tool_event_stream(request)
-                    .await
-                    .expect("failed to initiate stream")
-                    .into_inner()
+                (
+                    backend.name.clone(),
+                    backend
+                        .client
+                        .as_ref()
+                        .unwrap()
+                        .clone() // cloning clients is cheap
+                        .publish_build_tool_event_stream(request)
+                        .await
+                        .expect("failed to initiate stream")
+                        .into_inner(),
+                )
             })
             .collect()
             .await;
@@ -135,6 +149,24 @@ impl PublishBuildEvent for NBesService {
                     .expect("failed to receive message");
 
                 if let Some(request) = request {
+                    let PublishBuildToolEventStreamRequest {
+                        ordered_build_event:
+                            Some(OrderedBuildEvent {
+                                stream_id: Some(ref stream_id),
+                                sequence_number,
+                                ..
+                            }),
+                        ..
+                    } = request
+                    else {
+                        return Some((
+                            Err(Status::invalid_argument(
+                                "ordered_build_event field(s) are missing",
+                            )),
+                            state,
+                        ));
+                    };
+
                     // Forward the request to all backends via the broadcast channel
                     if !state.incoming_responses.is_empty() {
                         tx.send(request.clone()).expect("failed to send message");
@@ -142,34 +174,72 @@ impl PublishBuildEvent for NBesService {
 
                     // Wait for a response from each backend
                     let responses: Vec<_> =
-                        join_all(state.incoming_responses.iter_mut().map(|r| r.message()))
+                        join_all(state.incoming_responses.iter_mut().map(|r| r.1.message()))
                             .await
                             .into_iter()
                             .map(|r| r.expect("failed to receive message from backend"))
                             .collect();
 
                     // Validate the responses
-                    for response in responses {
+                    for (i, response) in responses.iter().enumerate() {
+                        let backend_name = &state.incoming_responses[i].0;
                         match response {
-                            Some(_) => {
-                                // TODO: validate received expected response
+                            Some(response) => {
+                                let PublishBuildToolEventStreamResponse {
+                                    stream_id: Some(response_stream_id),
+                                    sequence_number: response_sequence_number,
+                                } = response
+                                else {
+                                    return Some((
+                                        Err(Status::internal(format!(
+                                            "response from bes backend {backend_name} is missing stream_id",
+                                        ))),
+                                        state,
+                                    ));
+                                };
+
+                                if response_stream_id != stream_id
+                                    || *response_sequence_number != sequence_number
+                                {
+                                    eprintln!(
+                                        "warning: bes backend {} responded with unexpected stream id/sequence (expected={:?}/{}, actual = {:?}/{})",
+                                        backend_name,
+                                        stream_id,
+                                        sequence_number,
+                                        response_stream_id,
+                                        response_sequence_number
+                                    );
+
+                                    return Some((
+                                        Err(Status::internal(format!(
+                                            "bes backend {backend_name} responded with unexpected stream/sequence",
+                                        ))),
+                                        state,
+                                    ));
+                                }
                             }
                             None => {
-                                todo!("unexpected end of stream")
+                                return Some((
+                                    Err(Status::internal(format!(
+                                        "bes backend {backend_name} unexpectedly ended stream {stream_id:?}",
+                                    ))),
+                                    state,
+                                ));
                             }
                         };
                     }
 
                     // Send a single response back
-                    let build_event = request.ordered_build_event.expect("TODO");
                     return Some((
                         Ok(PublishBuildToolEventStreamResponse {
-                            stream_id: build_event.stream_id,
-                            sequence_number: build_event.sequence_number,
+                            stream_id: Some(stream_id.clone()),
+                            sequence_number: sequence_number,
                         }),
                         state,
                     ));
                 }
+
+                // The client closed the request stream. End the response stream.
                 None
             }
         }))))
@@ -181,10 +251,13 @@ impl PublishBuildEvent for NBesService {
     ) -> Result<Response<()>, Status> {
         let (metadata, _, message) = request.into_parts();
 
-        for client in &self.clients {
+        for backend in &self.backends {
             let mut outbound_request = Request::new(message.clone());
             copy_request_metadata(&metadata, &mut outbound_request);
-            client
+            backend
+                .client
+                .as_ref()
+                .unwrap()
                 .clone() // cloning client is cheap
                 .publish_lifecycle_event(outbound_request)
                 .await?;
@@ -240,12 +313,12 @@ async fn main() -> Result<()> {
         eprintln!("no bes backends configured; bes events will be swallowed by a black hole");
     }
 
-    for backend in &bes_backends {
+    for backend in bes_backends {
         eprintln!(
             "configured backend {} -> {}",
             backend.name, backend.endpoint
         );
-        nbes_service.add_client(backend.lazy_connect()?);
+        nbes_service.add_backend(backend)?;
     }
 
     Server::builder()
