@@ -226,6 +226,10 @@ async fn main() -> Result<()> {
     }
 
     Server::builder()
+        // TODO: properties to potentially configure
+        // .concurrency_limit_per_connection(100)
+        // .load_shed(true)
+        // .max_concurrent_streams(Some(1000))
         .add_service(PublishBuildEventServer::new(nbes_service))
         .serve(address)
         .await?;
