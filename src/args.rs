@@ -102,7 +102,6 @@ impl Into<BesBackend> for BesBackendArg {
         BesBackend {
             name: self.name,
             endpoint: self.endpoint,
-            client: None,
         }
     }
 }

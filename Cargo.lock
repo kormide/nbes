@@ -737,17 +737,21 @@ name = "nbes"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "clap",
  "futures",
+ "hyper-util",
  "prost",
  "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
  "rand",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "tower",
  "url",
 ]
 
@@ -1157,6 +1161,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

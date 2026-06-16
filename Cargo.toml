@@ -17,3 +17,10 @@ tokio-stream = {version = "0.1.18", features = ["sync"]}
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
 url = "2.5.8"
+
+[dev-dependencies]
+bytes = "1.11.1"
+hyper-util = "0.1.20"
+rand = "0.10.1"
+tempfile = "3.27.0"
+tower = "0.5.3"
