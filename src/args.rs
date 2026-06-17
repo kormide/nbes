@@ -30,6 +30,11 @@ pub struct Args {
     /// Socket address for the server to listen on. Defaults to 0.0.0.0:9000.
     #[arg(short, long, default_value_t = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000)))]
     pub listen: SocketAddr,
+
+    /// Unix domain socket for the server to listen on. Can be used instead of --listen.
+    /// E.g. --socket unix:/path/to/socket
+    #[arg(short, long, conflicts_with = "listen")]
+    pub socket: Option<String>,
 }
 
 #[derive(Clone, Debug)]
