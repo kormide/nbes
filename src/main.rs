@@ -12,9 +12,9 @@ use futures::{
     future::join_all,
     stream::{self, StreamExt},
 };
-use std::{pin::Pin, str::FromStr};
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
+use std::{fs, path::Path, pin::Pin, str::FromStr};
+use tokio::{net::UnixListener, sync::broadcast};
+use tokio_stream::wrappers::{BroadcastStream, UnixListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
@@ -284,7 +284,13 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    eprintln!("starting bes server on {}", args.listen);
+    eprintln!(
+        "starting bes server on {}",
+        args.socket
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or(args.listen.to_string())
+    );
 
     let bes_backends: Vec<BesBackend> = args.bes_backends.into_iter().map(|b| b.into()).collect();
 
@@ -302,14 +308,24 @@ async fn main() -> Result<()> {
         nbes_service.add_backend(backend)?;
     }
 
-    Server::builder()
+    let router = Server::builder()
         // TODO: properties to potentially configure
         // .concurrency_limit_per_connection(100)
         // .load_shed(true)
         // .max_concurrent_streams(Some(1000))
-        .add_service(PublishBuildEventServer::new(nbes_service))
-        .serve(args.listen)
-        .await?;
+        .add_service(PublishBuildEventServer::new(nbes_service));
+
+    if let Some(socket_url) = args.socket {
+        let socket_path = Path::new(socket_url.path());
+        if socket_path.exists() {
+            fs::remove_file(socket_path).context("failed to remove existing socket")?;
+        }
+        let socket_listener = UnixListener::bind(socket_path)?;
+        let socket_stream = UnixListenerStream::new(socket_listener);
+        router.serve_with_incoming(socket_stream).await?
+    } else {
+        router.serve(args.listen).await?;
+    };
 
     Ok(())
 }

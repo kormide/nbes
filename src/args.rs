@@ -30,12 +30,28 @@ pub struct Args {
     /// Socket address for the server to listen on. Defaults to 0.0.0.0:9000.
     #[arg(short, long, default_value_t = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000)))]
     pub listen: SocketAddr,
+
+    /// Unix domain socket for the server to listen on. Can be used instead of --listen.
+    /// E.g. --socket unix:/path/to/socket
+    #[arg(short, long, conflicts_with = "listen", value_parser = socket_parser)]
+    pub socket: Option<Url>,
 }
 
 #[derive(Clone, Debug)]
 pub struct BesBackendArg {
     name: String,
     endpoint: Url,
+}
+
+fn socket_parser(socket: &str) -> std::result::Result<Url, String> {
+    let url = Url::parse(socket).map_err(|e| format!("{e}"))?;
+    if url.scheme() != "unix" {
+        return Err(String::from(
+            "socket has incorrect url scheme; expected to start with unix:/",
+        ));
+    }
+
+    Ok(url)
 }
 
 impl FromStr for BesBackendArg {
