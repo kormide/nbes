@@ -12,7 +12,7 @@ use futures::{
     future::join_all,
     stream::{self, StreamExt},
 };
-use std::{env, pin::Pin, str::FromStr};
+use std::{pin::Pin, str::FromStr};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tonic::{
@@ -282,28 +282,9 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    const DEFAULT_PORT: u16 = 9000;
-
     let args = Args::parse();
 
-    let port = args
-        .port
-        .or_else(|| {
-            env::var("NBES_PORT").ok().and_then(|port| {
-                port.parse::<u16>()
-                    .inspect_err(|_| {
-                        eprintln!("failed to parse NBES_PORT env var, defaulting to {DEFAULT_PORT}")
-                    })
-                    .ok()
-            })
-        })
-        .unwrap_or(DEFAULT_PORT);
-
-    let address = format!("0.0.0.0:{}", port)
-        .parse()
-        .expect("failed to parse socket address");
-
-    eprintln!("starting bes server on {address}");
+    eprintln!("starting bes server on {}", args.listen);
 
     let bes_backends: Vec<BesBackend> = args.bes_backends.into_iter().map(|b| b.into()).collect();
 
@@ -327,7 +308,7 @@ async fn main() -> Result<()> {
         // .load_shed(true)
         // .max_concurrent_streams(Some(1000))
         .add_service(PublishBuildEventServer::new(nbes_service))
-        .serve(address)
+        .serve(args.listen)
         .await?;
 
     Ok(())

@@ -1,7 +1,11 @@
 use crate::BesBackend;
 use clap::{Error, Parser, error::ErrorKind};
 use rand::{RngExt, distr::Alphabetic};
-use std::{collections::HashMap, str::FromStr};
+use std::{
+    collections::HashMap,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    str::FromStr,
+};
 use url::Url;
 
 /// A BES backend that forwards to other BES backends
@@ -23,10 +27,9 @@ pub struct Args {
     #[arg(long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
-    /// Port serving the BES backend. Defaults to the value of the env var
-    /// NBES_PORT or 9000 if not specified.
-    #[arg(short, long)]
-    pub port: Option<u16>,
+    /// Socket address for the server to listen on. Defaults to 0.0.0.0:9000.
+    #[arg(short, long, default_value_t = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000)))]
+    pub listen: SocketAddr,
 }
 
 #[derive(Clone, Debug)]
