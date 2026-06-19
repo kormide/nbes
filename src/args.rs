@@ -91,7 +91,10 @@ impl FromStr for BesBackendArg {
             .parse()
             .map_err(|_| Error::new(ErrorKind::InvalidValue))
             .and_then(|mut url: Url| {
-                if !["grpc", "grpcs"].contains(&url.scheme()) {
+                if !["grpc", "grpcs", "http", "https"].contains(&url.scheme()) {
+                    return Err(Error::new(ErrorKind::InvalidValue));
+                }
+                if url.host().is_none() {
                     return Err(Error::new(ErrorKind::InvalidValue));
                 }
                 if url.port().is_none() {
@@ -206,5 +209,12 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(443, result.unwrap().endpoint.port().unwrap());
+    }
+
+    #[test]
+    fn parse_bes_backend_missing_host_fails() {
+        let result = "grpc://".parse::<BesBackendArg>();
+
+        assert!(result.is_err());
     }
 }

@@ -18,7 +18,7 @@ use tokio_stream::wrappers::{BroadcastStream, UnixListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
-    transport::{Channel, Endpoint, Server},
+    transport::{Channel, ClientTlsConfig, Endpoint, Server},
 };
 use url::Url;
 
@@ -45,11 +45,25 @@ impl BesBackend {
         Ok(match self.client {
             Some(_) => {}
             None => {
-                let channel = Endpoint::from_str(self.endpoint.as_str())
+                // Tonic doesn't appear to like "grpcs" as a scheme. Swap it with
+                // https for the client connection to avoid FRAME_SIZE_ERROR errors.
+                let mut endpoint = self.endpoint.clone();
+                if endpoint.scheme() == "grpcs" {
+                    // Cannot call `set_scheme` to change form grpcs to https
+                    // https://docs.rs/url/latest/url/struct.Url.html#method.set_scheme
+                    endpoint = Url::parse(&format!(
+                        "https://{}:{}",
+                        endpoint.host_str().expect("bes endpoint is missing host"),
+                        endpoint.port().expect("best endpoint is missing port")
+                    ))?;
+                }
+
+                let channel = Endpoint::from_str(endpoint.as_str())
                     .context(format!(
                         "failed to parse endpoint for backend {}",
                         self.name
                     ))?
+                    .tls_config(ClientTlsConfig::new().with_native_roots())?
                     // TODO: properties to potentially configure
                     // .connect_timeout(Duration::from_secs(10))
                     // .tcp_keepalive(tcp_keepalive)

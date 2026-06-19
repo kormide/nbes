@@ -14,6 +14,6 @@ protoc-gen-tonic = "0.5.0"
 rand = "0.10.1"
 tokio = {version = "1.52.2", features = ["macros", "rt-multi-thread"]}
 tokio-stream = {version = "0.1.18", features = ["sync"]}
-tonic = "0.14.5"
-tonic-prost = "0.14.5"
+tonic = { version = "0.14.6", features = ["tls-aws-lc", "tls-native-roots"] }
+tonic-prost = "0.14.6"
 url = "2.5.8"
