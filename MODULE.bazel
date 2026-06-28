@@ -18,7 +18,7 @@ single_version_override(
 toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 toolchains.toolchain(
     edition = "2024",
-    version = "1.94.0",
+    version = "1.96.0",
 )
 use_repo(toolchains, "default_rust_toolchains")
 
