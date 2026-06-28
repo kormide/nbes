@@ -10,7 +10,7 @@ use url::Url;
 
 /// A BES backend that forwards to other BES backends
 #[derive(Debug, Parser)]
-#[command(version, about, long_about = None)]
+#[command(version, about = "A BES backend that forwards to other BES backends", long_about = None)]
 pub struct Args {
     /// A BES backend to forward events to. In the simplest form, this
     /// can be a grpc endpoint. E.g.,
