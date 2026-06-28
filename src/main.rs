@@ -34,9 +34,8 @@ struct BesBackend {
     client: Option<PublishBuildEventClient<Channel>>,
 }
 
-type PublishBuildToolEventStreamStream = Pin<
-    Box<dyn Stream<Item = Result<PublishBuildToolEventStreamResponse, Status>> + Send + 'static>,
->;
+type PublishBuildToolEventStreamStream =
+    Pin<Box<dyn Stream<Item = Result<PublishBuildToolEventStreamResponse, Status>> + Send>>;
 
 impl BesBackend {
     /// Set up a client for a gRPC channel to the bes backend that does not
@@ -108,7 +107,7 @@ impl PublishBuildEvent for NBesService {
             /// Incoming request stream from Bazel
             incoming_requests: Streaming<PublishBuildToolEventStreamRequest>,
             /// Incoming response streams from the bes backends
-            incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
+            outbound_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
         }
 
         let (metadata, _, incoming_requests) = request.into_parts();
@@ -117,7 +116,7 @@ impl PublishBuildEvent for NBesService {
         // via a broadcast channel. Each backend turns its receiver into a stream
         // to forward requests to the backend.
         let (tx, _) = broadcast::channel::<PublishBuildToolEventStreamRequest>(256);
-        let incoming_responses = stream::iter(self.backends.iter())
+        let outbound_responses = stream::iter(self.backends.iter())
             .then(|backend| async {
                 let receiver = tx.subscribe();
                 let outbound_requests = BroadcastStream::new(receiver).map(|request| {
@@ -149,7 +148,7 @@ impl PublishBuildEvent for NBesService {
 
         let state = State {
             incoming_requests,
-            incoming_responses,
+            outbound_responses,
         };
 
         Ok(Response::new(Box::pin(unfold(state, move |mut state| {
@@ -182,13 +181,13 @@ impl PublishBuildEvent for NBesService {
                     };
 
                     // Forward the request to all backends via the broadcast channel
-                    if !state.incoming_responses.is_empty() {
+                    if !state.outbound_responses.is_empty() {
                         tx.send(request.clone()).expect("failed to send message");
                     }
 
                     // Wait for a response from each backend
                     let responses: Vec<_> =
-                        join_all(state.incoming_responses.iter_mut().map(|r| r.1.message()))
+                        join_all(state.outbound_responses.iter_mut().map(|r| r.1.message()))
                             .await
                             .into_iter()
                             .map(|r| r.expect("failed to receive message from backend"))
@@ -196,7 +195,7 @@ impl PublishBuildEvent for NBesService {
 
                     // Validate the responses
                     for (i, response) in responses.iter().enumerate() {
-                        let backend_name = &state.incoming_responses[i].0;
+                        let backend_name = &state.outbound_responses[i].0;
                         match response {
                             Some(response) => {
                                 let PublishBuildToolEventStreamResponse {
