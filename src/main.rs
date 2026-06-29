@@ -12,8 +12,14 @@ use futures::{
     future::join_all,
     stream::{self, StreamExt},
 };
-use std::{fs, path::Path, pin::Pin, str::FromStr};
-use tokio::{net::UnixListener, sync::broadcast};
+use std::{fs, marker::PhantomData, path::Path, pin::Pin, str::FromStr, task::Poll};
+use tokio::{
+    net::UnixListener,
+    sync::{
+        broadcast,
+        oneshot::{self, Receiver, error::TryRecvError},
+    },
+};
 use tokio_stream::wrappers::{BroadcastStream, UnixListenerStream};
 use tonic::{
     Request, Response, Status, Streaming,
@@ -152,111 +158,149 @@ impl PublishBuildEvent for NBesService {
             incoming_responses,
         };
 
-        Ok(Response::new(Box::pin(unfold(state, move |mut state| {
-            let tx = tx.clone();
-            async move {
-                // Receive a request from the Bazel client
-                let request = state
-                    .incoming_requests
-                    .message()
-                    .await
-                    .expect("failed to receive message");
+        let (first_request_tx, first_request_rx) = oneshot::channel::<()>();
 
-                if let Some(request) = request {
-                    let PublishBuildToolEventStreamRequest {
-                        ordered_build_event:
-                            Some(OrderedBuildEvent {
-                                stream_id: Some(ref stream_id),
-                                sequence_number,
-                                ..
-                            }),
-                        ..
-                    } = request
-                    else {
-                        return Some((
-                            Err(Status::invalid_argument(
-                                "ordered_build_event field(s) are missing",
-                            )),
-                            state,
-                        ));
-                    };
+        Ok(Response::new(Box::pin(ResponseStream {
+            rx: first_request_rx,
+            clients: self
+                .backends
+                .iter()
+                .map(|backend| {
+                    backend
+                        .client
+                        .as_ref()
+                        .expect("expected client to exist")
+                        .clone()
+                })
+                .collect(),
+            response_streams: Vec::new(),
+            request_tx: tx.clone(),
+            create_response_stream: move |client: &mut PublishBuildEventClient<Channel>| {
+                let receiver = tx.subscribe();
+                let foo = async {
+                    let outbound_requests = BroadcastStream::new(receiver).map(|request| {
+                        // BroadcastStream wraps the request in a Result in case it fails to
+                        // receive from the sender. But publish_build_tool_event_stream() takes
+                        // a stream of requests, so we must unwrap it. This should "never" occur,
+                        // so just panic.
+                        request.expect("failed to receive request from broadcast channel")
+                    });
+                    let request = Request::new(outbound_requests);
+                    client
+                        .publish_build_tool_event_stream(request)
+                        .await
+                        .expect("foobar")
+                        .into_inner()
+                };
+                Box::new(foo)
+            },
+        })))
 
-                    // Forward the request to all backends via the broadcast channel
-                    if !state.incoming_responses.is_empty() {
-                        tx.send(request.clone()).expect("failed to send message");
-                    }
-
-                    // Wait for a response from each backend
-                    let responses: Vec<_> =
-                        join_all(state.incoming_responses.iter_mut().map(|r| r.1.message()))
-                            .await
-                            .into_iter()
-                            .map(|r| r.expect("failed to receive message from backend"))
-                            .collect();
-
-                    // Validate the responses
-                    for (i, response) in responses.iter().enumerate() {
-                        let backend_name = &state.incoming_responses[i].0;
-                        match response {
-                            Some(response) => {
-                                let PublishBuildToolEventStreamResponse {
-                                    stream_id: Some(response_stream_id),
-                                    sequence_number: response_sequence_number,
-                                } = response
-                                else {
-                                    return Some((
-                                        Err(Status::internal(format!(
-                                            "response from bes backend {backend_name} is missing stream_id",
-                                        ))),
-                                        state,
-                                    ));
-                                };
-
-                                if response_stream_id != stream_id
-                                    || *response_sequence_number != sequence_number
-                                {
-                                    eprintln!(
-                                        "warning: bes backend {} responded with unexpected stream id/sequence (expected={:?}/{}, actual = {:?}/{})",
-                                        backend_name,
-                                        stream_id,
-                                        sequence_number,
-                                        response_stream_id,
-                                        response_sequence_number
-                                    );
-
-                                    return Some((
-                                        Err(Status::internal(format!(
-                                            "bes backend {backend_name} responded with unexpected stream/sequence",
-                                        ))),
-                                        state,
-                                    ));
-                                }
-                            }
-                            None => {
-                                eprintln!(
-                                    "bes backend {backend_name} unexpectedly ended stream {stream_id:?}"
-                                );
-                                // End the stream for all backends. Consider making this more fault
-                                // tolerant and continue the other streams?
-                                return None;
-                            }
-                        };
-                    }
-
-                    // Send a single response back
-                    return Some((
-                        Ok(PublishBuildToolEventStreamResponse {
-                            stream_id: Some(stream_id.clone()),
-                            sequence_number: sequence_number,
-                        }),
-                        state,
-                    ));
-                }
-
-                // The client closed the request stream. End the response stream.
-                None
-            }
-        }))))
+        // Ok(Response::new(Box::pin(unfold(state, move |mut state| {
+        //     let tx = tx.clone();
+        //     async move {
+        //         // Receive a request from the Bazel client
+        //         let request = state
+        //             .incoming_requests
+        //             .message()
+        //             .await
+        //             .expect("failed to receive message");
+        //
+        //         if let Some(request) = request {
+        //             let PublishBuildToolEventStreamRequest {
+        //                 ordered_build_event:
+        //                     Some(OrderedBuildEvent {
+        //                         stream_id: Some(ref stream_id),
+        //                         sequence_number,
+        //                         ..
+        //                     }),
+        //                 ..
+        //             } = request
+        //             else {
+        //                 return Some((
+        //                     Err(Status::invalid_argument(
+        //                         "ordered_build_event field(s) are missing",
+        //                     )),
+        //                     state,
+        //                 ));
+        //             };
+        //
+        //             // Forward the request to all backends via the broadcast channel
+        //             if !state.incoming_responses.is_empty() {
+        //                 tx.send(request.clone()).expect("failed to send message");
+        //             }
+        //
+        //             // Wait for a response from each backend
+        //             let responses: Vec<_> =
+        //                 join_all(state.incoming_responses.iter_mut().map(|r| r.1.message()))
+        //                     .await
+        //                     .into_iter()
+        //                     .map(|r| r.expect("failed to receive message from backend"))
+        //                     .collect();
+        //
+        //             // Validate the responses
+        //             for (i, response) in responses.iter().enumerate() {
+        //                 let backend_name = &state.incoming_responses[i].0;
+        //                 match response {
+        //                     Some(response) => {
+        //                         let PublishBuildToolEventStreamResponse {
+        //                             stream_id: Some(response_stream_id),
+        //                             sequence_number: response_sequence_number,
+        //                         } = response
+        //                         else {
+        //                             return Some((
+        //                                 Err(Status::internal(format!(
+        //                                     "response from bes backend {backend_name} is missing stream_id",
+        //                                 ))),
+        //                                 state,
+        //                             ));
+        //                         };
+        //
+        //                         if response_stream_id != stream_id
+        //                             || *response_sequence_number != sequence_number
+        //                         {
+        //                             eprintln!(
+        //                                 "warning: bes backend {} responded with unexpected stream id/sequence (expected={:?}/{}, actual = {:?}/{})",
+        //                                 backend_name,
+        //                                 stream_id,
+        //                                 sequence_number,
+        //                                 response_stream_id,
+        //                                 response_sequence_number
+        //                             );
+        //
+        //                             return Some((
+        //                                 Err(Status::internal(format!(
+        //                                     "bes backend {backend_name} responded with unexpected stream/sequence",
+        //                                 ))),
+        //                                 state,
+        //                             ));
+        //                         }
+        //                     }
+        //                     None => {
+        //                         eprintln!(
+        //                             "bes backend {backend_name} unexpectedly ended stream {stream_id:?}"
+        //                         );
+        //                         // End the stream for all backends. Consider making this more fault
+        //                         // tolerant and continue the other streams?
+        //                         return None;
+        //                     }
+        //                 };
+        //             }
+        //
+        //             // Send a single response back
+        //             return Some((
+        //                 Ok(PublishBuildToolEventStreamResponse {
+        //                     stream_id: Some(stream_id.clone()),
+        //                     sequence_number: sequence_number,
+        //                 }),
+        //                 state,
+        //             ));
+        //         }
+        //
+        //         // The client closed the request stream. End the response stream.
+        //         None
+        //     }
+        // }))))
     }
 
     async fn publish_lifecycle_event(
@@ -291,6 +335,98 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
                 to_request.metadata_mut().append_bin(key, value.clone());
             }
         }
+    }
+}
+
+struct ResponseStream<F> {
+    rx: Receiver<()>,
+    clients: Vec<PublishBuildEventClient<Channel>>,
+    response_streams: Vec<
+        Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Response<Streaming<PublishBuildToolEventStreamResponse>>,
+                            Status,
+                        >,
+                    > + Send,
+            >,
+        >,
+    >,
+
+    // response_streams:
+    //     Vec<Box<dyn Future<Output = Streaming<PublishBuildToolEventStreamResponse>> + Send>>,
+    // response_streams: Vec<Streaming<PublishBuildToolEventStreamResponse>>,
+    request_tx: broadcast::Sender<PublishBuildToolEventStreamRequest>,
+    create_response_stream: F,
+}
+
+impl<F> Stream for ResponseStream<F>
+where
+    F: for<'a> FnMut(
+        &'a mut PublishBuildEventClient<Channel>,
+    ) -> Pin<
+        Box<dyn Future<Output = Streaming<PublishBuildToolEventStreamResponse>> + 'a>,
+    >,
+{
+    type Item = Result<PublishBuildToolEventStreamResponse, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match self.as_mut().rx.try_recv() {
+            Ok(_) => {
+                let request_tx = self.request_tx.clone();
+                for client in &mut self.clients {
+                    let receiver = request_tx.subscribe();
+                    let outbound_requests = BroadcastStream::new(receiver).map(|request| {
+                        // BroadcastStream wraps the request in a Result in case it fails to
+                        // receive from the sender. But publish_build_tool_event_stream() takes
+                        // a stream of requests, so we must unwrap it. This should "never" occur,
+                        // so just panic.
+                        request.expect("failed to receive request from broadcast channel")
+                    });
+                    let request = Request::new(outbound_requests);
+                    let response_stream = client.publish_build_tool_event_stream(request);
+                    // let response_stream_fut =
+                    //     (self.as_mut().create_response_stream)(client.clone());
+                    self.response_streams.push(Box::pin(response_stream));
+                }
+                todo!()
+            }
+            Err(TryRecvError::Empty) => Poll::Pending,
+            Err(TryRecvError::Closed) => Poll::Pending,
+        }
+        //     if self.response_streams.is_empty() {
+        //         unsafe {
+        //             let foo = self.get_unchecked_mut();
+        //             match foo.rx.try_recv() {
+        //                 Ok(_) => {
+        //                     for client in &foo.clients {
+        //                         let receiver = self.request_tx.subscribe();
+        //                         let outbound_requests = BroadcastStream::new(receiver).map(|request| {
+        //                             // BroadcastStream wraps the request in a Result in case it fails to
+        //                             // receive from the sender. But publish_build_tool_event_stream() takes
+        //                             // a stream of requests, so we must unwrap it. This should "never" occur,
+        //                             // so just panic.
+        //                             request.expect("failed to receive request from broadcast channel")
+        //                         });
+        //                         let request = Request::new(outbound_requests);
+        //                         let response_stream = client.publish_build_tool_event_stream(request);
+        //                         let response_stream_fut =
+        //                             (self.as_mut().create_response_stream)(client.clone());
+        //                         // self.response_streams.push(Box::new(response_stream_fut));
+        //                     }
+        //                     todo!()
+        //                 }
+        //                 Err(TryRecvError::Empty) => Poll::Pending,
+        //                 Err(TryRecvError::Closed) => Poll::Pending,
+        //             }
+        //         }
+        //     } else {
+        //         Poll::Pending
+        //     }
     }
 }
 
