@@ -20,7 +20,9 @@ use tokio::{
         mpsc::{self},
     },
 };
-use tokio_stream::wrappers::{BroadcastStream, UnixListenerStream};
+use tokio_stream::wrappers::{
+    BroadcastStream, UnixListenerStream, errors::BroadcastStreamRecvError,
+};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
@@ -111,11 +113,9 @@ impl PublishBuildEvent for NBesService {
         request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
         struct State {
-            /// Incoming request stream from Bazel
-            // incoming_requests: Streaming<PublishBuildToolEventStreamRequest>,
-            /// Incoming response streams from the bes backends
+            /// Response streams from the bes backends
             incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
-            // first_request: Option<PublishBuildToolEventStreamRequest>,
+            /// Receiver to process requests serially
             request_rx: mpsc::Receiver<PublishBuildToolEventStreamRequest>,
         }
 
@@ -169,19 +169,20 @@ impl PublishBuildEvent for NBesService {
 
         let incoming_responses = stream::iter(self.backends.iter())
             .then(|backend| {
-                // let first_request = first_request.clone();
-                // let tx = tx.clone();
                 let metadata = metadata.clone();
-                let be_request_rx = be_request_rx.pop().expect("failed to pop receiver");
+                let be_request_rx = be_request_rx.pop().expect("missing receiver");
                 async move {
-                    // let receiver = tx.subscribe();
-                    let outbound_requests = BroadcastStream::new(be_request_rx).map(|request| {
-                        // BroadcastStream wraps the request in a Result in case it fails to
-                        // receive from the sender. But publish_build_tool_event_stream() takes
-                        // a stream of requests, so we must unwrap it. This should "never" occur,
-                        // so just panic.
-                        request.expect("failed to receive request from broadcast channel")
-                    });
+                    let outbound_requests =
+                        BroadcastStream::new(be_request_rx).filter_map(|request| {
+                            futures::future::ready(match request {
+                                Ok(request) => Some(request),
+                                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                                    // This shouldn't happen, but log if it does
+                                    eprintln!("error: request broadcast stream lagged and skipped {skipped} requests");
+                                    None
+                                }
+                            })
+                        });
 
                     let mut request = Request::new(outbound_requests);
                     copy_request_metadata(&metadata, &mut request);
@@ -278,7 +279,7 @@ impl PublishBuildEvent for NBesService {
                 eprintln!("waiting responses");
 
                 // Wait for a response from each backend
-                let responses: Vec<_> =
+                let _responses: Vec<_> =
                     join_all(state.incoming_responses.iter_mut().map(|r| r.1.message()))
                         .await
                         .into_iter()
