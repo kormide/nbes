@@ -34,7 +34,7 @@ rust_library(
 rust_test(
     name = "lib_test",
     size = "small",
-    crate = ":bin",
+    crate = ":lib",
 )
 
 rust_binary(
