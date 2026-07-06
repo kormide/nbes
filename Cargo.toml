@@ -8,6 +8,7 @@ anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 env_logger = "0.11.11"
 futures = "0.3.32"
+hyper-util = "0.1.20"
 log = "0.4.33"
 prost = "0.14.4"
 prost-types = "0.14.4"
@@ -18,4 +19,5 @@ tokio = {version = "1.52.2", features = ["macros", "rt-multi-thread"]}
 tokio-stream = {version = "0.1.18", features = ["sync"]}
 tonic = { version = "0.14.6", features = ["tls-aws-lc", "tls-native-roots"] }
 tonic-prost = "0.14.6"
+tower = "0.5.3"
 url = "2.5.8"

@@ -10,10 +10,11 @@ use futures::{
     future::join_all,
     stream::{StreamExt, unfold},
 };
+use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
-use std::{fs, net::SocketAddr, path::Path, pin::Pin, str::FromStr};
+use std::{fs, net::SocketAddr, pin::Pin, str::FromStr};
 use tokio::{
-    net::UnixListener,
+    net::{UnixListener, UnixStream},
     sync::{
         broadcast::{self},
         mpsc::{self},
@@ -25,8 +26,9 @@ use tokio_stream::wrappers::{
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
-    transport::{Channel, ClientTlsConfig, Endpoint, Server},
+    transport::{Channel, ClientTlsConfig, Endpoint, Server, Uri},
 };
+use tower::service_fn;
 use url::Url;
 
 pub struct Config {
@@ -53,43 +55,68 @@ impl BesBackend {
     /// Set up a client for a gRPC channel to the bes backend that does not
     /// connect until first use.
     pub fn lazy_connect(&mut self) -> Result<()> {
-        Ok(match self.client {
-            Some(_) => {}
-            None => {
-                // Tonic doesn't appear to like "grpcs" as a scheme. Swap it with
-                // https for the client connection to avoid FRAME_SIZE_ERROR errors.
-                let mut endpoint = self.endpoint.clone();
-                if endpoint.scheme() == "grpcs" {
-                    // Cannot call `set_scheme` to change form grpcs to https
-                    // https://docs.rs/url/latest/url/struct.Url.html#method.set_scheme
-                    endpoint = Url::parse(&format!(
-                        "https://{}:{}",
-                        endpoint.host_str().expect("bes endpoint is missing host"),
-                        endpoint.port().expect("best endpoint is missing port")
-                    ))?;
+        if self.client.is_some() {
+            return Ok(());
+        }
+
+        let use_tls = ["grpcs", "https"].contains(&self.endpoint.scheme());
+        let use_uds = self.endpoint.scheme() == "unix";
+
+        // Tonic doesn't appear to like "grpcs" as a scheme. Swap it with
+        // https for the client connection to avoid FRAME_SIZE_ERROR errors.
+        let mut endpoint = self.endpoint.clone();
+        if endpoint.scheme() == "grpcs" {
+            // Cannot call `set_scheme` to change form grpcs to https
+            // https://docs.rs/url/latest/url/struct.Url.html#method.set_scheme
+            endpoint = Url::parse(&format!(
+                "https://{}:{}",
+                endpoint.host_str().expect("bes endpoint is missing host"),
+                endpoint.port().expect("best endpoint is missing port")
+            ))?;
+        };
+
+        let mut channel = if use_uds {
+            // This url is ignored when connecting via a uds
+            Endpoint::try_from("http://[::]:50051")?
+        } else {
+            Endpoint::from_str(endpoint.as_str()).context(format!(
+                "failed to parse endpoint for backend {}",
+                self.name
+            ))?
+        };
+
+        if use_tls {
+            channel = channel.tls_config(ClientTlsConfig::new().with_native_roots())?;
+        }
+
+        // TODO: properties to potentially configure
+        // let channel = channel
+        // .connect_timeout(Duration::from_secs(10))
+        // .tcp_keepalive(tcp_keepalive)
+        // .tcp_keepalive_interval(tcp_keepalive_interval)
+        // .tcp_keepalive_retries(tcp_keepalive_retries)
+        // .concurrency_limit(limit)
+        // .rate_limit(limit, duration)
+        // .http2_keep_alive_interval(interval)
+        // .keep_alive_while_idle(enabled)
+        // .keep_alive_timeout(duration)
+
+        let channel = if use_uds {
+            let uds_path = endpoint.to_file_path().map_err(|_| {
+                anyhow::anyhow!("failed to convert url {} to file path", endpoint.as_str())
+            })?;
+            channel.connect_with_connector_lazy(service_fn(move |_: Uri| {
+                let uds_path = uds_path.clone();
+                async move {
+                    Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
                 }
+            }))
+        } else {
+            channel.connect_lazy()
+        };
 
-                let channel = Endpoint::from_str(endpoint.as_str())
-                    .context(format!(
-                        "failed to parse endpoint for backend {}",
-                        self.name
-                    ))?
-                    .tls_config(ClientTlsConfig::new().with_native_roots())?
-                    // TODO: properties to potentially configure
-                    // .connect_timeout(Duration::from_secs(10))
-                    // .tcp_keepalive(tcp_keepalive)
-                    // .tcp_keepalive_interval(tcp_keepalive_interval)
-                    // .tcp_keepalive_retries(tcp_keepalive_retries)
-                    // .concurrency_limit(limit)
-                    // .rate_limit(limit, duration)
-                    // .http2_keep_alive_interval(interval)
-                    // .keep_alive_while_idle(enabled)
-                    // .keep_alive_timeout(duration)
-                    .connect_lazy();
-
-                self.client.replace(PublishBuildEventClient::new(channel));
-            }
-        })
+        self.client.replace(PublishBuildEventClient::new(channel));
+        Ok(())
     }
 }
 
@@ -423,9 +450,11 @@ pub async fn run(config: Config) -> Result<()> {
         .add_service(PublishBuildEventServer::new(nbes_service));
 
     if let Some(socket_url) = config.socket {
-        let socket_path = Path::new(socket_url.path());
+        let socket_path = socket_url.to_file_path().map_err(|_| {
+            anyhow::anyhow!("failed to convert url {} to file path", socket_url.as_str())
+        })?;
         if socket_path.exists() {
-            fs::remove_file(socket_path).context("failed to remove existing socket")?;
+            fs::remove_file(&socket_path).context("failed to remove existing socket")?;
         }
         let socket_listener = UnixListener::bind(socket_path)?;
         let socket_stream = UnixListenerStream::new(socket_listener);

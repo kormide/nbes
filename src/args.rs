@@ -83,7 +83,7 @@ impl FromStr for BesBackendArg {
 
         // A missing scheme is not a valid Url, so prepend the
         // default before parsing
-        if !endpoint.contains("://") {
+        if !endpoint.contains("://") && !endpoint.contains("unix:/") {
             endpoint.insert_str(0, "grpcs://");
         }
 
@@ -91,15 +91,17 @@ impl FromStr for BesBackendArg {
             .parse()
             .map_err(|_| Error::new(ErrorKind::InvalidValue))
             .and_then(|mut url: Url| {
-                if !["grpc", "grpcs", "http", "https"].contains(&url.scheme()) {
+                if !["grpc", "grpcs", "http", "https", "unix"].contains(&url.scheme()) {
                     return Err(Error::new(ErrorKind::InvalidValue));
                 }
-                if url.host().is_none() {
-                    return Err(Error::new(ErrorKind::InvalidValue));
-                }
-                if url.port().is_none() {
-                    url.set_port(Some(443))
-                        .map_err(|_| Error::new(ErrorKind::InvalidValue))?;
+                if url.scheme() != "unix" {
+                    if url.host().is_none() {
+                        return Err(Error::new(ErrorKind::InvalidValue));
+                    }
+                    if url.port().is_none() {
+                        url.set_port(Some(443))
+                            .map_err(|_| Error::new(ErrorKind::InvalidValue))?;
+                    }
                 }
 
                 Ok(url)
@@ -216,5 +218,13 @@ mod tests {
         let result = "grpc://".parse::<BesBackendArg>();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bes_backend_unix_domain_socket() {
+        let result = "unix:/tmp/socket".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        assert_eq!("unix", result.unwrap().endpoint.scheme());
     }
 }

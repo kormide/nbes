@@ -919,6 +919,7 @@ dependencies = [
  "clap",
  "env_logger",
  "futures",
+ "hyper-util",
  "log",
  "prost",
  "prost-types",
@@ -929,6 +930,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "tower",
  "url",
 ]
 
