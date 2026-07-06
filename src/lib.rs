@@ -1,6 +1,7 @@
 use anyhow::Result;
 use log::{info, warn};
 use std::{net::SocketAddr, path::PathBuf};
+use url::Url;
 
 use crate::{
     forwarding::{BesBackend, BesForwardingService},
@@ -8,13 +9,14 @@ use crate::{
 };
 
 pub mod forwarding;
-mod server;
+pub mod server;
 
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
     pub listen: Binding,
 }
 
+#[derive(Clone)]
 pub enum Binding {
     SocketAddr(SocketAddr),
     UnixDomainSocket(PathBuf),
@@ -43,4 +45,18 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
     info!("shutting down");
 
     Ok(())
+}
+
+impl Into<Url> for &Binding {
+    fn into(self) -> Url {
+        match self {
+            Binding::SocketAddr(address) => {
+                Url::parse(&address.to_string()).expect("failed to parse url from socket address")
+            }
+            Binding::UnixDomainSocket(socket_path) => {
+                Url::parse(&format!("unix:{}", socket_path.display()))
+                    .expect("failed to parse url from unix domain socket path")
+            }
+        }
+    }
 }

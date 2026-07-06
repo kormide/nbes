@@ -21,3 +21,6 @@ tonic = { version = "0.14.6", features = ["tls-aws-lc", "tls-native-roots"] }
 tonic-prost = "0.14.6"
 tower = "0.5.3"
 url = "2.5.8"
+
+[dev-dependencies]
+tempfile = "3.27.0"

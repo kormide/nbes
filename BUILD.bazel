@@ -67,6 +67,24 @@ rust_test(
     crate = ":bin",
 )
 
+rust_test(
+    name = "integration_test",
+    srcs = ["tests/test.rs"],
+    crate_root = "tests/test.rs",
+    deps = [
+        ":lib",
+        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
+        "@crates//:anyhow",
+        "@crates//:futures",
+        "@crates//:hyper-util",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:url",
+    ],
+)
+
 buildifier(
     name = "buildifier",
     exclude_patterns = [
