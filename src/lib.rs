@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub mod forwarding;
-mod server;
+pub mod server;
 
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,

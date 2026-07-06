@@ -12,6 +12,11 @@ load(
     "rust_test",
 )
 
+FEATURES = {
+    "": [],
+    "_with_testutils": ["test-utils"],
+}
+
 rust_library(
     name = "lib",
     srcs = [
@@ -65,6 +70,24 @@ rust_test(
     name = "bin_test",
     size = "small",
     crate = ":bin",
+)
+
+rust_test(
+    name = "integration_test",
+    srcs = ["tests/test.rs"],
+    crate_root = "tests/test.rs",
+    deps = [
+        ":lib",
+        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
+        "@crates//:anyhow",
+        "@crates//:futures",
+        "@crates//:hyper-util",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+        "@crates//:url",
+    ],
 )
 
 buildifier(
