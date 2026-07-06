@@ -1,5 +1,5 @@
-use crate::BesBackend;
 use clap::{Error, Parser, error::ErrorKind};
+use nbes::BesBackend;
 use rand::{RngExt, distr::Alphabetic};
 use std::{
     collections::HashMap,

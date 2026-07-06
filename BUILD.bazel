@@ -3,34 +3,57 @@ load(
     "rust_binary",
 )
 load(
+    "@rules_rs//rs:rust_library.bzl",
+    "rust_library",
+)
+load(
     "@rules_rs//rs:rust_test.bzl",
     "rust_test",
 )
 load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
 
-rust_binary(
-    name = "bin",
-    srcs = glob(["src/**/*.rs"]),
+rust_library(
+    name = "lib",
+    srcs = ["src/lib.rs"],
     deps = [
+        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
         "@crates//:anyhow",
-        "@crates//:clap",
-        "@crates//:env_logger",
         "@crates//:futures",
         "@crates//:log",
-        "@crates//:rand",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tonic",
         "@crates//:url",
-        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
     ],
-    binary_name = "nbes",
     crate_name = "nbes",
     version = "0.0.0", # TODO: stamp
 )
 
 rust_test(
-    name = "test",
+    name = "lib_test",
+    size = "small",
+    crate = ":bin",
+)
+
+rust_binary(
+    name = "bin",
+    srcs = ["src/args.rs", "src/main.rs"],
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:env_logger",
+        "@crates//:log",
+        "@crates//:rand",
+        "@crates//:tokio",
+        "@crates//:url",
+        ":lib",
+    ],
+    binary_name = "nbes",
+    version = "0.0.0", # TODO: stamp
+)
+
+rust_test(
+    name = "bin_test",
     size = "small",
     crate = ":bin",
 )
