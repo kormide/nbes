@@ -9,6 +9,7 @@ use build_proto::google::devtools::build::v1::{
 use clap::Parser;
 use futures::{Stream, stream::unfold};
 use futures::{future::join_all, stream::StreamExt};
+use log::{LevelFilter, error, info, warn};
 use std::{fs, path::Path, pin::Pin, str::FromStr};
 use tokio::{
     net::UnixListener,
@@ -101,56 +102,33 @@ impl NBesService {
     }
 
     fn validate_build_event_ack_response(
+        backend_name: &str,
         stream_id: &StreamId,
         seq: i64,
-        backend_name: &str,
-        response: &PublishBuildToolEventStreamResponse,
+        response_stream_id: &StreamId,
+        response_seq: i64,
     ) -> Result<(), Status> {
-        let PublishBuildToolEventStreamResponse {
-            stream_id: Some(response_stream_id),
-            sequence_number: response_seq,
-        } = response
-        else {
-            return Err(Status::internal(format!(
-                "response from bes backend {backend_name} is missing stream_id",
-            )));
-        };
-
-        if response_stream_id != stream_id || *response_seq != seq {
-            eprintln!(
-                "warning: bes backend {} responded with unexpected stream id/sequence (expected={:?}/{}, actual = {:?}/{})",
-                backend_name, stream_id, seq, response_stream_id, response_seq
+        if response_stream_id != stream_id {
+            error!(
+                "[invocation_id={}] bes backend {backend_name} responded with unexpected stream id {:?}",
+                stream_id.invocation_id, stream_id
             );
-
             return Err(Status::internal(format!(
-                "bes backend {backend_name} responded with unexpected stream/sequence",
+                "bes backend {backend_name} responded with unexpected stream id",
+            )));
+        }
+
+        if response_seq != seq {
+            error!(
+                "[invocation_id={}] bes backend {backend_name} responded with unexpected sequence, expected {seq} but found {response_seq}",
+                stream_id.invocation_id,
+            );
+            return Err(Status::internal(format!(
+                "bes backend {backend_name} responded with unexpected sequence",
             )));
         }
 
         Ok(())
-    }
-
-    /// Receive the next response from each bes backend. If any returned
-    /// an error status, return the first error.
-    async fn receive_backend_responses(
-        response_streams: impl Iterator<Item = &mut Streaming<PublishBuildToolEventStreamResponse>>,
-    ) -> Result<Vec<Option<PublishBuildToolEventStreamResponse>>, Status> {
-        let (responses, mut errors): (Vec<_>, Vec<_>) =
-            join_all(response_streams.map(|r| r.message()))
-                .await
-                .into_iter()
-                .partition(Result::is_ok);
-
-        if !errors.is_empty() {
-            eprintln!(
-                "failed to receive response from {} backend(s)",
-                errors.len()
-            );
-
-            return Err(errors.pop().unwrap().unwrap_err());
-        }
-        let responses: Vec<_> = responses.into_iter().map(|r| r.unwrap()).collect();
-        Ok(responses)
     }
 }
 
@@ -167,6 +145,17 @@ impl PublishBuildEvent for NBesService {
             incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
             /// Receiver to handle requests serially
             request_rx: mpsc::Receiver<PublishBuildToolEventStreamRequest>,
+            /// Identifier of the build stream
+            stream_id: Option<StreamId>,
+        }
+
+        impl State {
+            fn iid(&self) -> &str {
+                self.stream_id
+                    .as_ref()
+                    .map(|sid| sid.invocation_id.as_str())
+                    .unwrap_or("unknown")
+            }
         }
 
         let (metadata, _, mut incoming_request_stream) = request.into_parts();
@@ -250,7 +239,7 @@ impl PublishBuildEvent for NBesService {
                     .publish_build_tool_event_stream(request)
                     .await
                     .inspect_err(|e| {
-                        eprintln!(
+                        error!(
                             "failed to initiate event stream with backend {}: {e}",
                             backend.name
                         )
@@ -262,6 +251,7 @@ impl PublishBuildEvent for NBesService {
         let state = State {
             incoming_responses,
             request_rx,
+            stream_id: None,
         };
 
         Ok(Response::new(Box::pin(unfold(state, |mut state| {
@@ -270,7 +260,13 @@ impl PublishBuildEvent for NBesService {
                 let request = match state.request_rx.recv().await {
                     Some(request) => request,
                     // The client closed the request stream, end the respoinse stream
-                    None => return None,
+                    None => {
+                        info!(
+                            "[invocation_id={}] completed build tool event stream",
+                            state.iid()
+                        );
+                        return None;
+                    }
                 };
 
                 let PublishBuildToolEventStreamRequest {
@@ -291,36 +287,64 @@ impl PublishBuildEvent for NBesService {
                     ));
                 };
 
+                if sequence_number == 1 {
+                    state.stream_id.replace(stream_id.clone());
+                    info!(
+                        "[invocation_id={}] started build tool event stream",
+                        state.iid()
+                    );
+                }
+
                 // Wait for a corresponding response from each bes backend
-                let responses = match Self::receive_backend_responses(
-                    state.incoming_responses.iter_mut().map(|r| &mut r.1),
-                )
-                .await
-                {
-                    Ok(responses) => responses,
-                    Err(e) => return Some((Err(e), state)),
-                };
+                let responses =
+                    join_all(state.incoming_responses.iter_mut().map(|r| r.1.message())).await;
 
                 for (i, response) in responses.iter().enumerate() {
                     let backend_name = &state.incoming_responses[i].0;
                     match response {
-                        Some(response) => {
-                            if let Err(status) = Self::validate_build_event_ack_response(
-                                stream_id,
-                                sequence_number,
-                                &backend_name,
-                                response,
-                            ) {
-                                return Some((Err(status), state));
-                            }
+                        Ok(response) => {
+                            match response {
+                                Some(response) => {
+                                    let PublishBuildToolEventStreamResponse {
+                                        stream_id: Some(response_stream_id),
+                                        sequence_number: response_seq,
+                                    } = response
+                                    else {
+                                        return Some((
+                                            Err(Status::internal(format!(
+                                                "response from bes backend {backend_name} is missing stream_id",
+                                            ))),
+                                            state,
+                                        ));
+                                    };
+
+                                    if let Err(status) = Self::validate_build_event_ack_response(
+                                        &backend_name,
+                                        stream_id,
+                                        sequence_number,
+                                        response_stream_id,
+                                        *response_seq,
+                                    ) {
+                                        return Some((Err(status), state));
+                                    }
+                                }
+                                None => {
+                                    error!(
+                                        "[invocation_id={}] bes backend {backend_name} unexpectedly ended stream on sequence {sequence_number}",
+                                        state.iid()
+                                    );
+                                    // End the stream for all backends. Consider making this more fault
+                                    // tolerant and continue the other streams?
+                                    return None;
+                                }
+                            };
                         }
-                        None => {
-                            eprintln!(
-                                "bes backend {backend_name} unexpectedly ended stream {stream_id:?}"
+                        Err(status) => {
+                            error!(
+                                "[invocation_id={}] failed to receive build event from backend {backend_name}: {status}",
+                                state.iid()
                             );
-                            // End the stream for all backends. Consider making this more fault
-                            // tolerant and continue the other streams?
-                            return None;
+                            return Some((Err(status.clone()), state));
                         }
                     };
                 }
@@ -375,8 +399,15 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    eprintln!(
-        "starting bes server on {}",
+    env_logger::builder()
+        .filter_level(LevelFilter::Info)
+        .format_target(false)
+        .parse_env("NBES_LOG")
+        .init();
+
+    info!("starting nbes {}", env!("CARGO_PKG_VERSION"),);
+    info!(
+        "listening on {}",
         args.socket
             .as_ref()
             .map(|s| s.to_string())
@@ -388,11 +419,11 @@ async fn main() -> Result<()> {
     let mut nbes_service = NBesService::new();
 
     if bes_backends.is_empty() {
-        eprintln!("no bes backends configured; bes events will be swallowed by a black hole");
+        warn!("no bes backends configured; bes events will be swallowed by a black hole");
     }
 
     for backend in bes_backends {
-        eprintln!(
+        info!(
             "configured backend {} -> {}",
             backend.name, backend.endpoint
         );

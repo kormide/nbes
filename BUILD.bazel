@@ -14,7 +14,9 @@ rust_binary(
     deps = [
         "@crates//:anyhow",
         "@crates//:clap",
+        "@crates//:env_logger",
         "@crates//:futures",
+        "@crates//:log",
         "@crates//:rand",
         "@crates//:tokio",
         "@crates//:tokio-stream",
@@ -23,6 +25,8 @@ rust_binary(
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
     ],
     binary_name = "nbes",
+    crate_name = "nbes",
+    version = "0.0.0", # TODO: stamp
 )
 
 rust_test(
