@@ -1,3 +1,5 @@
+"""Macro for vendoring remote protobuf libraries"""
+
 load("@diff.bzl//diff:defs.bzl", "diff")
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
 

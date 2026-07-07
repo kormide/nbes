@@ -1,5 +1,5 @@
-load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
 load("@rules_rust_prost//:defs.bzl", "rust_prost_library")
+load("//third_party/bazel:defs.bzl", "vendored_bazel_protobuf_library")
 
 vendored_bazel_protobuf_library(
     name = "build_event_stream_proto",
