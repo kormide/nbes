@@ -427,7 +427,7 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
     }
 }
 
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> Result<()> {
     let mut nbes_service = NBesService::new();
 
     if config.bes_backends.is_empty() {
@@ -458,10 +458,16 @@ pub async fn run(config: Config) -> Result<()> {
         }
         let socket_listener = UnixListener::bind(socket_path)?;
         let socket_stream = UnixListenerStream::new(socket_listener);
-        router.serve_with_incoming(socket_stream).await?
+        router
+            .serve_with_incoming_shutdown(socket_stream, shutdown_signal)
+            .await?
     } else {
-        router.serve(config.listen).await?;
+        router
+            .serve_with_shutdown(config.listen, shutdown_signal)
+            .await?;
     };
+
+    info!("shutting down");
 
     Ok(())
 }

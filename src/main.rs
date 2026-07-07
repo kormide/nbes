@@ -3,6 +3,7 @@ use args::Args;
 use clap::Parser;
 use log::{LevelFilter, info};
 use nbes::Config;
+use tokio::signal;
 
 mod args;
 
@@ -31,7 +32,14 @@ async fn main() -> Result<()> {
         socket: args.socket,
     };
 
-    nbes::run(config).await?;
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to listed for ctrl-c signal");
+        info!("received ctrl-c");
+    };
+
+    nbes::run(config, ctrl_c).await?;
 
     Ok(())
 }
