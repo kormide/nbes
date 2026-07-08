@@ -15,6 +15,7 @@ load(
 rust_library(
     name = "lib",
     srcs = [
+        "src/forwarding.rs",
         "src/lib.rs",
         "src/server.rs",
     ],

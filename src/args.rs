@@ -1,5 +1,5 @@
 use clap::{Error, Parser, error::ErrorKind};
-use nbes::BesBackend;
+use nbes::forwarding::BesBackend;
 use rand::{RngExt, distr::Alphabetic};
 use std::{
     collections::HashMap,
