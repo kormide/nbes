@@ -14,7 +14,10 @@ load(
 
 rust_library(
     name = "lib",
-    srcs = ["src/lib.rs"],
+    srcs = [
+        "src/lib.rs",
+        "src/server.rs",
+    ],
     crate_name = "nbes",
     version = "0.0.0",  # TODO: stamp
     deps = [

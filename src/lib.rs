@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use build_proto::google::devtools::build::v1::{
     OrderedBuildEvent, PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
-    PublishLifecycleEventRequest, StreamId,
-    publish_build_event_client::PublishBuildEventClient,
-    publish_build_event_server::{PublishBuildEvent, PublishBuildEventServer},
+    PublishLifecycleEventRequest, StreamId, publish_build_event_client::PublishBuildEventClient,
+    publish_build_event_server::PublishBuildEvent,
 };
 use futures::{
     Stream,
@@ -12,24 +11,26 @@ use futures::{
 };
 use hyper_util::rt::TokioIo;
 use log::{error, info, warn};
-use std::{fs, net::SocketAddr, pin::Pin, str::FromStr};
+use std::{net::SocketAddr, pin::Pin, str::FromStr};
 use tokio::{
-    net::{UnixListener, UnixStream},
+    net::UnixStream,
     sync::{
         broadcast::{self},
         mpsc::{self},
     },
 };
-use tokio_stream::wrappers::{
-    BroadcastStream, UnixListenerStream, errors::BroadcastStreamRecvError,
-};
+use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
-    transport::{Channel, ClientTlsConfig, Endpoint, Server, Uri},
+    transport::{Channel, ClientTlsConfig, Endpoint, Uri},
 };
 use tower::service_fn;
 use url::Url;
+
+use crate::server::GrpcBesServer;
+
+mod server;
 
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
@@ -442,30 +443,19 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
         nbes_service.add_backend(backend)?;
     }
 
-    let router = Server::builder()
-        // TODO: properties to potentially configure
-        // .concurrency_limit_per_connection(100)
-        // .load_shed(true)
-        // .max_concurrent_streams(Some(1000))
-        .add_service(PublishBuildEventServer::new(nbes_service));
-
-    if let Some(socket_url) = config.socket {
+    let server = if let Some(socket_url) = config.socket {
         let socket_path = socket_url.to_file_path().map_err(|_| {
             anyhow::anyhow!("failed to convert url {} to file path", socket_url.as_str())
         })?;
-        if socket_path.exists() {
-            fs::remove_file(&socket_path).context("failed to remove existing socket")?;
-        }
-        let socket_listener = UnixListener::bind(socket_path)?;
-        let socket_stream = UnixListenerStream::new(socket_listener);
-        router
-            .serve_with_incoming_shutdown(socket_stream, shutdown_signal)
-            .await?
+        GrpcBesServer::unix_domain_socket(socket_path)
     } else {
-        router
-            .serve_with_shutdown(config.listen, shutdown_signal)
-            .await?;
+        GrpcBesServer::listen(config.listen)
     };
+
+    server
+        .bes_service(nbes_service)
+        .serve(shutdown_signal)
+        .await?;
 
     info!("shutting down");
 
