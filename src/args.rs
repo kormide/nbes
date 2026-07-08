@@ -4,6 +4,7 @@ use rand::{RngExt, distr::Alphabetic};
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
     str::FromStr,
 };
 use url::Url;
@@ -34,7 +35,7 @@ pub struct Args {
     /// Unix domain socket for the server to listen on. Can be used instead of --listen.
     /// E.g. --socket unix:/path/to/socket
     #[arg(short, long, conflicts_with = "listen", value_parser = socket_parser)]
-    pub socket: Option<Url>,
+    pub socket: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,15 +44,18 @@ pub struct BesBackendArg {
     endpoint: Url,
 }
 
-fn socket_parser(socket: &str) -> std::result::Result<Url, String> {
+fn socket_parser(socket: &str) -> std::result::Result<PathBuf, String> {
     let url = Url::parse(socket).map_err(|e| format!("{e}"))?;
     if url.scheme() != "unix" {
         return Err(String::from(
             "socket has incorrect url scheme; expected to start with unix:/",
         ));
     }
+    let path = url
+        .to_file_path()
+        .map_err(|_| String::from("socket is not a valid file path"))?;
 
-    Ok(url)
+    Ok(path)
 }
 
 impl FromStr for BesBackendArg {

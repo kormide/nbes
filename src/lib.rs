@@ -1,7 +1,6 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::net::SocketAddr;
-use url::Url;
+use std::{net::SocketAddr, path::PathBuf};
 
 use crate::{
     forwarding::{BesBackend, BesForwardingService},
@@ -14,7 +13,7 @@ mod server;
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
     pub listen: SocketAddr,
-    pub socket: Option<Url>,
+    pub socket: Option<PathBuf>,
 }
 
 pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> Result<()> {
@@ -32,10 +31,7 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
         nbes_service.add_backend(backend)?;
     }
 
-    let server = if let Some(socket_url) = config.socket {
-        let socket_path = socket_url.to_file_path().map_err(|_| {
-            anyhow::anyhow!("failed to convert url {} to file path", socket_url.as_str())
-        })?;
+    let server = if let Some(socket_path) = config.socket {
         GrpcBesServer::unix_domain_socket(socket_path)
     } else {
         GrpcBesServer::listen(config.listen)

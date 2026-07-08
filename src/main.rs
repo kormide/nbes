@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
         "listening on {}",
         args.socket
             .as_ref()
-            .map(|s| s.to_string())
+            .map(|s| format!("unix:{}", s.display()))
             .unwrap_or(args.listen.to_string())
     );
 
