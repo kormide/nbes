@@ -2,7 +2,7 @@ use anyhow::Result;
 use args::Args;
 use clap::Parser;
 use log::{LevelFilter, info};
-use nbes::Config;
+use nbes::{Config, Listen};
 use tokio::signal;
 
 mod args;
@@ -28,8 +28,10 @@ async fn main() -> Result<()> {
 
     let config = Config {
         bes_backends: args.bes_backends.into_iter().map(|b| b.into()).collect(),
-        listen: args.listen,
-        socket: args.socket,
+        listen: args
+            .socket
+            .map(|socket_path| Listen::UnixDomainSocket(socket_path))
+            .unwrap_or_else(|| Listen::SocketAddr(args.listen)),
     };
 
     let ctrl_c = async {

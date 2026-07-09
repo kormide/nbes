@@ -12,8 +12,12 @@ mod server;
 
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
-    pub listen: SocketAddr,
-    pub socket: Option<PathBuf>,
+    pub listen: Listen,
+}
+
+pub enum Listen {
+    SocketAddr(SocketAddr),
+    UnixDomainSocket(PathBuf),
 }
 
 pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> Result<()> {
@@ -31,13 +35,7 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
         nbes_service.add_backend(backend)?;
     }
 
-    let server = if let Some(socket_path) = config.socket {
-        GrpcBesServer::unix_domain_socket(socket_path)
-    } else {
-        GrpcBesServer::listen(config.listen)
-    };
-
-    server
+    GrpcBesServer::listen(config.listen)
         .bes_service(nbes_service)
         .serve(shutdown_signal)
         .await?;
