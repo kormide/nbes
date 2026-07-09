@@ -396,6 +396,19 @@ impl PublishBuildEvent for BesForwardingService {
     ) -> Result<Response<()>, Status> {
         let (metadata, _, message) = request.into_parts();
 
+        // TODO: if `check_preceding_lifecycle_events_present` is set, a BES
+        // backend is supposed to wait to have received a corresponding parent
+        // event before processing. However, it's unclear what's meant by "before
+        // processing". Should an error be returned? Should the call block until
+        // the parent is received?
+        //
+        // The changesets where this flag was added don't provide additional context.
+        // https://github.com/googleapis/googleapis/commit/a877d3d3a0fcf5f02d083796710a804583586012
+        // https://github.com/bazelbuild/bazel/commit/14b5c41c29423866cd3f2ee3f7b69ff48241bd34
+        //
+        // Buildbuddy doesn't appear to do anything and also just forwards to proxies and acks.
+        // https://github.com/buildbuddy-io/buildbuddy/blob/cc2b155e70e9fd6666dfb8bfeebd7118893e5b51/server/build_event_protocol/build_event_server/build_event_server.go#L51
+
         for backend in &self.backends {
             let mut outbound_request = Request::new(message.clone());
             copy_request_metadata(&metadata, &mut outbound_request);
