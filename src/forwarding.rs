@@ -34,7 +34,7 @@ pub struct BesForwardingService {
 pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
-    pub client: Option<PublishBuildEventClient<Channel>>,
+    client: Option<PublishBuildEventClient<Channel>>,
 }
 
 type PublishBuildToolEventStreamStream = Pin<
@@ -42,6 +42,14 @@ type PublishBuildToolEventStreamStream = Pin<
 >;
 
 impl BesBackend {
+    pub fn new(name: String, endpoint: Url) -> Self {
+        Self {
+            name,
+            endpoint,
+            client: None,
+        }
+    }
+
     /// Set up a client for a gRPC channel to the bes backend that does not
     /// connect until first use.
     pub fn lazy_connect(&mut self) -> Result<()> {

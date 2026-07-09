@@ -127,11 +127,7 @@ impl FromStr for BesBackendArg {
 
 impl Into<BesBackend> for BesBackendArg {
     fn into(self) -> BesBackend {
-        BesBackend {
-            name: self.name,
-            endpoint: self.endpoint,
-            client: None,
-        }
+        BesBackend::new(self.name, self.endpoint)
     }
 }
 
