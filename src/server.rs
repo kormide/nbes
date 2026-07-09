@@ -7,34 +7,34 @@ use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Server, server::Router};
 
-use crate::Listen;
+use crate::Binding;
 
 pub struct GrpcBesServer {
-    listen: Listen,
+    binding: Binding,
     router: Router,
 }
 
 pub struct GrpcBesServerConfig {
-    listen: Listen,
+    binding: Binding,
     server: Server,
 }
 
 impl GrpcBesServer {
-    pub fn listen(listen: Listen) -> GrpcBesServerConfig {
+    pub fn listen(binding: Binding) -> GrpcBesServerConfig {
         GrpcBesServerConfig {
-            listen,
+            binding,
             server: Server::builder(),
         }
     }
 
     pub async fn serve(self, shutdown_signal: impl Future<Output = ()>) -> Result<()> {
-        match self.listen {
-            Listen::SocketAddr(address) => {
+        match self.binding {
+            Binding::SocketAddr(address) => {
                 self.router
                     .serve_with_shutdown(address, shutdown_signal)
                     .await?;
             }
-            Listen::UnixDomainSocket(socket_path) => {
+            Binding::UnixDomainSocket(socket_path) => {
                 if socket_path.exists() {
                     fs::remove_file(&socket_path).context("failed to remove existing socket")?;
                 }
@@ -48,6 +48,10 @@ impl GrpcBesServer {
 
         Ok(())
     }
+
+    pub fn binding(&self) -> &Binding {
+        &self.binding
+    }
 }
 
 impl GrpcBesServerConfig {
@@ -59,7 +63,7 @@ impl GrpcBesServerConfig {
 
     pub fn bes_service(mut self, service: impl PublishBuildEvent) -> GrpcBesServer {
         GrpcBesServer {
-            listen: self.listen,
+            binding: self.binding,
             router: self
                 .server
                 .add_service(PublishBuildEventServer::new(service)),

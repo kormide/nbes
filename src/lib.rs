@@ -12,10 +12,10 @@ mod server;
 
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
-    pub listen: Listen,
+    pub listen: Binding,
 }
 
-pub enum Listen {
+pub enum Binding {
     SocketAddr(SocketAddr),
     UnixDomainSocket(PathBuf),
 }

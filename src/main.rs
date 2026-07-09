@@ -2,7 +2,7 @@ use anyhow::Result;
 use args::Args;
 use clap::Parser;
 use log::{LevelFilter, info};
-use nbes::{Config, Listen};
+use nbes::{Binding, Config};
 use tokio::signal;
 
 mod args;
@@ -30,8 +30,8 @@ async fn main() -> Result<()> {
         bes_backends: args.bes_backends.into_iter().map(|b| b.into()).collect(),
         listen: args
             .socket
-            .map(|socket_path| Listen::UnixDomainSocket(socket_path))
-            .unwrap_or_else(|| Listen::SocketAddr(args.listen)),
+            .map(|socket_path| Binding::UnixDomainSocket(socket_path))
+            .unwrap_or_else(|| Binding::SocketAddr(args.listen)),
     };
 
     let ctrl_c = async {
