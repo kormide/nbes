@@ -396,6 +396,8 @@ impl PublishBuildEvent for BesForwardingService {
     ) -> Result<Response<()>, Status> {
         let (metadata, _, message) = request.into_parts();
 
+        eprintln!("{message:#?}");
+
         for backend in &self.backends {
             let mut outbound_request = Request::new(message.clone());
             copy_request_metadata(&metadata, &mut outbound_request);

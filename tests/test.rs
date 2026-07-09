@@ -20,7 +20,76 @@ use tower::service_fn;
 use url::Url;
 
 #[tokio::test]
-pub async fn test_forward_to_single_backend_responds_in_sequence() -> Result<()> {
+pub async fn test_blackhole_acks_build_tool_events() -> Result<()> {
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: Vec::default(),
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let request_stream = futures::stream::iter([
+        build_tool_event(1),
+        build_tool_event(2),
+        build_tool_event(3),
+        build_tool_event(4),
+        build_tool_event(5),
+    ]);
+
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    let mut expected_seq = 1;
+    while let Some(response) = response_stream.message().await? {
+        assert_eq!(expected_seq, response.sequence_number);
+        expected_seq += 1;
+    }
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: Vec::default(),
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    client
+        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(invocation_attempt_started_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(invocation_attempt_finished_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(build_finished_lifecycle_event()))
+        .await?;
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_forward_responds_in_sequence() -> Result<()> {
     let server_uds = NamedTempFile::new()?;
     let mock_server =
         MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
@@ -53,6 +122,43 @@ pub async fn test_forward_to_single_backend_responds_in_sequence() -> Result<()>
         assert_eq!(expected_seq, response.sequence_number);
         expected_seq += 1;
     }
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+    mock_server.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_forward_acks_lifecycle_events() -> Result<()> {
+    let server_uds = NamedTempFile::new()?;
+    let mock_server =
+        MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![mock_server.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    client
+        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(invocation_attempt_started_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(invocation_attempt_finished_lifecycle_event()))
+        .await?;
+    client
+        .publish_lifecycle_event(Request::new(build_finished_lifecycle_event()))
+        .await?;
 
     shutdown_nbes.send(()).unwrap();
     nbes_handle.await??;
@@ -216,6 +322,70 @@ fn build_tool_event(seq: i64) -> PublishBuildToolEventStreamRequest {
             sequence_number: seq,
             ..Default::default()
         }),
+        ..Default::default()
+    }
+}
+
+fn build_enqueued_lifecycle_event() -> PublishLifecycleEventRequest {
+    /*
+    *   service_level: Interactive,
+        build_event: Some(
+            OrderedBuildEvent {
+                stream_id: Some(
+                    StreamId {
+                        build_id: "b3bcf30e-1513-4c0a-b340-0964bfb83707",
+                        invocation_id: "",
+                        component: Controller,
+                    },
+                ),
+                sequence_number: 1,
+                event: Some(
+                    BuildEvent {
+                        event_time: Some(
+                            Timestamp {
+                                seconds: 1783631677,
+                                nanos: 296000000,
+                            },
+                        ),
+                        event: Some(
+                            BuildEnqueued(
+                                BuildEnqueued {
+                                    details: None,
+                                },
+                            ),
+                        ),
+                    },
+                ),
+            },
+        ),
+        stream_timeout: None,
+        notification_keywords: [
+            "protocol_name=BEP",
+            "command_name=build",
+        ],
+        project_id: "",
+        check_preceding_lifecycle_events_present: false,
+    */
+    PublishLifecycleEventRequest {
+        service_level: 0,
+        ..Default::default()
+    }
+}
+
+fn invocation_attempt_started_lifecycle_event() -> PublishLifecycleEventRequest {
+    PublishLifecycleEventRequest {
+        ..Default::default()
+    }
+}
+
+fn invocation_attempt_finished_lifecycle_event() -> PublishLifecycleEventRequest {
+    PublishLifecycleEventRequest {
+        ..Default::default()
+    }
+}
+
+fn build_finished_lifecycle_event() -> PublishLifecycleEventRequest {
+    PublishLifecycleEventRequest {
         ..Default::default()
     }
 }
