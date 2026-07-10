@@ -374,7 +374,19 @@ impl PublishBuildEvent for BesForwardingService {
                                 "[invocation_id={}] failed to receive build event from backend {backend_name}: {status}",
                                 state.iid()
                             );
-                            return Some((Err(status.clone()), state));
+                            return Some((
+                                Err(Status::with_details_and_metadata(
+                                    status.code(),
+                                    format!(
+                                        "{} failed event stream request: {}",
+                                        backend_name,
+                                        status.message()
+                                    ),
+                                    status.details().iter().cloned().collect(),
+                                    status.metadata().clone(),
+                                )),
+                                state,
+                            ));
                         }
                     };
                 }

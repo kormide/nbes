@@ -16,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use nbes::Binding;
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
-use std::{pin::Pin, sync::Arc};
+use std::{collections::VecDeque, pin::Pin, sync::Arc};
 use tempfile::NamedTempFile;
 use tokio::{
     net::UnixStream,
@@ -205,14 +205,15 @@ pub async fn test_forwards_headers() -> Result<()> {
 
     while let Some(_) = response_stream.message().await? {}
 
-    {
-        // Header was included in the forwarded request
-        let requests = mock_server.build_tool_event_stream_requests.lock().await;
-        assert_eq!(1, requests.len());
-        let header = requests[0].metadata.get("foo");
-        assert!(header.is_some());
-        assert_eq!(header.unwrap(), "bar");
-    }
+    mock_server
+        .assert(|mock| {
+            let requests = &mock.build_tool_event_stream_requests;
+            assert_eq!(1, requests.len());
+            let header = requests[0].metadata.get("foo");
+            assert!(header.is_some());
+            assert_eq!(header.unwrap(), "bar");
+        })
+        .await;
 
     shutdown_nbes.send(()).unwrap();
     nbes_handle.await??;
@@ -266,6 +267,88 @@ pub async fn test_lifecycle_request_fails_when_one_backend_fails() -> Result<()>
     Ok(())
 }
 
+#[tokio::test]
+pub async fn test_event_stream_request_fails_when_one_backend_fails() -> Result<()> {
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+    b1.mock_event_stream_responses([
+        Ok(PublishBuildToolEventStreamResponse {
+            stream_id: Some(StreamId {
+                build_id: String::from(""),
+                invocation_id: String::from(""),
+                ..Default::default()
+            }),
+            sequence_number: 1,
+        }),
+        Ok(PublishBuildToolEventStreamResponse {
+            stream_id: Some(StreamId {
+                build_id: String::from(""),
+                invocation_id: String::from(""),
+                ..Default::default()
+            }),
+            sequence_number: 2,
+        }),
+    ])
+    .await;
+    let b2_uds = NamedTempFile::new()?;
+    let b2 = MockBesServer::spawn(
+        String::from("b2"),
+        Binding::UnixDomainSocket(b2_uds.path().to_path_buf()),
+    )
+    .await;
+    b2.mock_event_stream_responses([
+        Ok(PublishBuildToolEventStreamResponse {
+            stream_id: Some(StreamId {
+                build_id: String::from(""),
+                invocation_id: String::from(""),
+                ..Default::default()
+            }),
+            sequence_number: 1,
+        }),
+        Err(Status::internal("oops")),
+    ])
+    .await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let request_stream = futures::stream::iter([
+        build_tool_event(1),
+        build_tool_event(2), // b2 fails
+    ]);
+
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    response_stream.message().await?; // r1
+    let r2 = response_stream.message().await;
+
+    assert!(r2.is_err());
+    let status = r2.unwrap_err();
+    assert_eq!(Code::Internal, status.code());
+    assert_eq!("b2 failed event stream request: oops", status.message());
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+    b1.shutdown().await;
+    b2.shutdown().await;
+
+    Ok(())
+}
+
 /// Spawn nbes in a task and provide a oneshot channel to shut it down
 async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -310,14 +393,20 @@ struct MockBesServer {
     handle: JoinHandle<Result<()>>,
     shutdown_tx: oneshot::Sender<()>,
     url: Url,
-    pub build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
-    fail_lifecycle_events: Arc<Mutex<bool>>,
+    mock: Arc<Mutex<MockData>>,
 }
 
 /// Implements the bes server proto contract
 struct MockBesService {
-    build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
-    fail_lifecycle_events: Arc<Mutex<bool>>,
+    mock: Arc<Mutex<MockData>>,
+}
+
+struct MockData {
+    fail_lifecycle_events: bool,
+    ack_all_build_stream_requests: bool,
+    build_tool_event_stream_requests: Vec<RecordedRequest>,
+    build_tool_event_stream_responses:
+        VecDeque<Result<PublishBuildToolEventStreamResponse, Status>>,
 }
 
 #[derive(Debug)]
@@ -330,13 +419,15 @@ impl MockBesServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let url: Url = (&listen).into();
 
-        let build_tool_event_stream_requests = Arc::new(Mutex::new(Vec::default()));
-        let fail_lifecycle_events = Arc::new(Mutex::new(false));
+        let mock = Arc::new(Mutex::new(MockData {
+            fail_lifecycle_events: false,
+            ack_all_build_stream_requests: true,
+            build_tool_event_stream_requests: Vec::default(),
+            build_tool_event_stream_responses: VecDeque::default(),
+        }));
 
-        let server = GrpcBesServer::listen(listen).bes_service(MockBesService {
-            build_tool_event_stream_requests: build_tool_event_stream_requests.clone(),
-            fail_lifecycle_events: fail_lifecycle_events.clone(),
-        });
+        let server =
+            GrpcBesServer::listen(listen).bes_service(MockBesService { mock: mock.clone() });
         let handle = tokio::spawn(async move {
             server
                 .serve(async move {
@@ -350,13 +441,28 @@ impl MockBesServer {
             handle,
             shutdown_tx,
             url,
-            build_tool_event_stream_requests,
-            fail_lifecycle_events,
+            mock,
         }
     }
 
+    /// Run assertions on the current mock data
+    pub async fn assert(&self, assert: impl Fn(&MockData) -> ()) {
+        let mock = self.mock.lock().await;
+        assert(&mock);
+    }
+
+    pub async fn mock_event_stream_responses(
+        &self,
+        responses: impl IntoIterator<Item = Result<PublishBuildToolEventStreamResponse, Status>>,
+    ) {
+        let mut mock = self.mock.lock().await;
+
+        mock.ack_all_build_stream_requests = false;
+        mock.build_tool_event_stream_responses.extend(responses);
+    }
+
     pub async fn fail_lifecycle_events(&self) {
-        *self.fail_lifecycle_events.lock().await = true;
+        self.mock.lock().await.fail_lifecycle_events = true;
     }
 
     pub async fn shutdown(self) {
@@ -383,17 +489,22 @@ impl PublishBuildEvent for MockBesService {
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
         struct State {
             request_stream: Streaming<PublishBuildToolEventStreamRequest>,
+            mock: Arc<Mutex<MockData>>,
         }
 
         let (metadata, _, request_stream) = request.into_parts();
 
         let recorded_request = RecordedRequest { metadata };
-        self.build_tool_event_stream_requests
+        self.mock
             .lock()
             .await
+            .build_tool_event_stream_requests
             .push(recorded_request);
 
-        let state = State { request_stream };
+        let state = State {
+            request_stream,
+            mock: self.mock.clone(),
+        };
 
         Ok(Response::new(Box::pin(unfold(state, |mut state| async {
             match state.request_stream.message().await {
@@ -417,13 +528,25 @@ impl PublishBuildEvent for MockBesService {
                             ));
                         };
 
-                        Some((
-                            Ok(PublishBuildToolEventStreamResponse {
-                                stream_id: Some(stream_id.clone()),
-                                sequence_number: sequence_number,
-                            }),
-                            state,
-                        ))
+                        if state.mock.lock().await.ack_all_build_stream_requests {
+                            Some((
+                                Ok(PublishBuildToolEventStreamResponse {
+                                    stream_id: Some(stream_id.clone()),
+                                    sequence_number: sequence_number,
+                                }),
+                                state,
+                            ))
+                        } else {
+                            {
+                                state
+                                    .mock
+                                    .lock()
+                                    .await
+                                    .build_tool_event_stream_responses
+                                    .pop_front()
+                            }
+                            .map(|response| (response, state))
+                        }
                     }
                     None => None,
                 },
@@ -436,7 +559,7 @@ impl PublishBuildEvent for MockBesService {
         &self,
         _request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        if *self.fail_lifecycle_events.lock().await {
+        if self.mock.lock().await.fail_lifecycle_events {
             Err(Status::internal("oops"))
         } else {
             Ok(Response::new(()))
