@@ -418,7 +418,19 @@ impl PublishBuildEvent for BesForwardingService {
                 .unwrap()
                 .clone() // cloning client is cheap
                 .publish_lifecycle_event(outbound_request)
-                .await?;
+                .await
+                .map_err(|status| {
+                    Status::with_details_and_metadata(
+                        status.code(),
+                        format!(
+                            "{} failed lifecycle request: {}",
+                            backend.name,
+                            status.message()
+                        ),
+                        status.details().iter().cloned().collect(),
+                        status.metadata().clone(),
+                    )
+                })?;
         }
 
         Ok(Response::new(()))

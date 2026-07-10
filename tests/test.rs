@@ -24,7 +24,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tonic::{
-    Request, Response, Status, Streaming,
+    Code, Request, Response, Status, Streaming,
     metadata::MetadataValue,
     transport::{Endpoint, Uri},
 };
@@ -97,8 +97,11 @@ pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
 #[tokio::test]
 pub async fn test_forward_responds_in_sequence() -> Result<()> {
     let server_uds = NamedTempFile::new()?;
-    let mock_server =
-        MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
+    let mock_server = MockBesServer::spawn(
+        String::from("mock_server"),
+        Binding::UnixDomainSocket(server_uds.path().to_path_buf()),
+    )
+    .await;
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -139,8 +142,11 @@ pub async fn test_forward_responds_in_sequence() -> Result<()> {
 #[tokio::test]
 pub async fn test_forward_acks_lifecycle_events() -> Result<()> {
     let server_uds = NamedTempFile::new()?;
-    let mock_server =
-        MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
+    let mock_server = MockBesServer::spawn(
+        String::from("mock_server"),
+        Binding::UnixDomainSocket(server_uds.path().to_path_buf()),
+    )
+    .await;
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -169,8 +175,11 @@ pub async fn test_forward_acks_lifecycle_events() -> Result<()> {
 #[tokio::test]
 pub async fn test_forwards_headers() -> Result<()> {
     let server_uds = NamedTempFile::new()?;
-    let mock_server =
-        MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
+    let mock_server = MockBesServer::spawn(
+        String::from("mock_server"),
+        Binding::UnixDomainSocket(server_uds.path().to_path_buf()),
+    )
+    .await;
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -208,6 +217,51 @@ pub async fn test_forwards_headers() -> Result<()> {
     shutdown_nbes.send(()).unwrap();
     nbes_handle.await??;
     mock_server.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_lifecycle_request_fails_when_one_backend_fails() -> Result<()> {
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+    let b2_uds = NamedTempFile::new()?;
+    let b2 = MockBesServer::spawn(
+        String::from("b2"),
+        Binding::UnixDomainSocket(b2_uds.path().to_path_buf()),
+    )
+    .await;
+
+    b2.fail_lifecycle_events().await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let response = client
+        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event()))
+        .await;
+
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(Code::Internal, status.code());
+    assert_eq!("b2 failed lifecycle request: oops", status.message());
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+    b1.shutdown().await;
+    b2.shutdown().await;
 
     Ok(())
 }
@@ -252,15 +306,18 @@ async fn connect_client_local(server_binding: Binding) -> Result<PublishBuildEve
 
 /// A BES server that can be used to record requests and mock responses for testing.
 struct MockBesServer {
+    name: String,
     handle: JoinHandle<Result<()>>,
     shutdown_tx: oneshot::Sender<()>,
     url: Url,
     pub build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    fail_lifecycle_events: Arc<Mutex<bool>>,
 }
 
 /// Implements the bes server proto contract
 struct MockBesService {
     build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    fail_lifecycle_events: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug)]
@@ -269,13 +326,16 @@ struct RecordedRequest {
 }
 
 impl MockBesServer {
-    pub async fn spawn(listen: Binding) -> MockBesServer {
+    pub async fn spawn(name: String, listen: Binding) -> MockBesServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let url: Url = (&listen).into();
 
         let build_tool_event_stream_requests = Arc::new(Mutex::new(Vec::default()));
+        let fail_lifecycle_events = Arc::new(Mutex::new(false));
+
         let server = GrpcBesServer::listen(listen).bes_service(MockBesService {
             build_tool_event_stream_requests: build_tool_event_stream_requests.clone(),
+            fail_lifecycle_events: fail_lifecycle_events.clone(),
         });
         let handle = tokio::spawn(async move {
             server
@@ -286,11 +346,17 @@ impl MockBesServer {
         });
 
         MockBesServer {
+            name,
             handle,
             shutdown_tx,
             url,
             build_tool_event_stream_requests,
+            fail_lifecycle_events,
         }
+    }
+
+    pub async fn fail_lifecycle_events(&self) {
+        *self.fail_lifecycle_events.lock().await = true;
     }
 
     pub async fn shutdown(self) {
@@ -299,7 +365,7 @@ impl MockBesServer {
     }
 
     pub fn to_bes_backend(&self) -> BesBackend {
-        BesBackend::new(String::from("mock_server"), self.url.clone())
+        BesBackend::new(self.name.clone(), self.url.clone())
     }
 }
 
@@ -370,7 +436,11 @@ impl PublishBuildEvent for MockBesService {
         &self,
         _request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        Ok(Response::new(()))
+        if *self.fail_lifecycle_events.lock().await {
+            Err(Status::internal("oops"))
+        } else {
+            Ok(Response::new(()))
+        }
     }
 }
 
