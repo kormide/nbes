@@ -16,14 +16,19 @@ use hyper_util::rt::TokioIo;
 use nbes::Binding;
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
-use std::pin::Pin;
+use std::{pin::Pin, sync::Arc};
 use tempfile::NamedTempFile;
-use tokio::{net::UnixStream, sync::oneshot, task::JoinHandle};
-use tonic::transport::Channel;
+use tokio::{
+    net::UnixStream,
+    sync::{Mutex, oneshot},
+    task::JoinHandle,
+};
 use tonic::{
     Request, Response, Status, Streaming,
+    metadata::MetadataValue,
     transport::{Endpoint, Uri},
 };
+use tonic::{metadata::MetadataMap, transport::Channel};
 use tower::service_fn;
 use url::Url;
 
@@ -161,6 +166,52 @@ pub async fn test_forward_acks_lifecycle_events() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+pub async fn test_forwards_headers() -> Result<()> {
+    let server_uds = NamedTempFile::new()?;
+    let mock_server =
+        MockBesServer::spawn(Binding::UnixDomainSocket(server_uds.path().to_path_buf())).await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![mock_server.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let request_stream = futures::stream::iter([build_tool_event(1)]);
+
+    let mut request = Request::new(request_stream);
+
+    // Add a "foo: bar" header to the request
+    request
+        .metadata_mut()
+        .append("foo", MetadataValue::from_static("bar"));
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    while let Some(_) = response_stream.message().await? {}
+
+    {
+        // Header was included in the forwarded request
+        let requests = mock_server.build_tool_event_stream_requests.lock().await;
+        assert_eq!(1, requests.len());
+        let header = requests[0].metadata.get("foo");
+        assert!(header.is_some());
+        assert_eq!(header.unwrap(), "bar");
+    }
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+    mock_server.shutdown().await;
+
+    Ok(())
+}
+
 /// Spawn nbes in a task and provide a oneshot channel to shut it down
 async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -204,17 +255,28 @@ struct MockBesServer {
     handle: JoinHandle<Result<()>>,
     shutdown_tx: oneshot::Sender<()>,
     url: Url,
+    pub build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
 
 /// Implements the bes server proto contract
-struct MockBesService {}
+struct MockBesService {
+    build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
+}
+
+#[derive(Debug)]
+struct RecordedRequest {
+    metadata: MetadataMap,
+}
 
 impl MockBesServer {
     pub async fn spawn(listen: Binding) -> MockBesServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let url: Url = (&listen).into();
 
-        let server = GrpcBesServer::listen(listen).bes_service(MockBesService {});
+        let build_tool_event_stream_requests = Arc::new(Mutex::new(Vec::default()));
+        let server = GrpcBesServer::listen(listen).bes_service(MockBesService {
+            build_tool_event_stream_requests: build_tool_event_stream_requests.clone(),
+        });
         let handle = tokio::spawn(async move {
             server
                 .serve(async move {
@@ -227,6 +289,7 @@ impl MockBesServer {
             handle,
             shutdown_tx,
             url,
+            build_tool_event_stream_requests,
         }
     }
 
@@ -256,7 +319,13 @@ impl PublishBuildEvent for MockBesService {
             request_stream: Streaming<PublishBuildToolEventStreamRequest>,
         }
 
-        let (_, _, request_stream) = request.into_parts();
+        let (metadata, _, request_stream) = request.into_parts();
+
+        let recorded_request = RecordedRequest { metadata };
+        self.build_tool_event_stream_requests
+            .lock()
+            .await
+            .push(recorded_request);
 
         let state = State { request_stream };
 
