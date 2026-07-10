@@ -24,7 +24,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tonic::{
-    Request, Response, Status, Streaming,
+    Code, Request, Response, Status, Streaming,
     metadata::MetadataValue,
     transport::{Endpoint, Uri},
 };
@@ -212,6 +212,53 @@ pub async fn test_forwards_headers() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+pub async fn test_event_stream_fails_response_when_one_backend_fails() -> Result<()> {
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_lifecycle_request_fails_when_one_backend_fails() -> Result<()> {
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(Binding::UnixDomainSocket(b1_uds.path().to_path_buf())).await;
+    let b2_uds = NamedTempFile::new()?;
+    let b2 = MockBesServer::spawn(Binding::UnixDomainSocket(b2_uds.path().to_path_buf())).await;
+
+    b2.fail_lifecycle_events().await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let response = client
+        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event()))
+        .await;
+
+    assert!(response.is_err());
+    let status = response.unwrap_err();
+    assert_eq!(Code::Internal, status.code());
+    assert_eq!("oops", status.message());
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+    b1.shutdown().await;
+    b2.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_event_stream_forwarded_without_blocking_on_responses() -> Result<()> {
+    Ok(())
+}
+
 /// Spawn nbes in a task and provide a oneshot channel to shut it down
 async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -256,11 +303,13 @@ struct MockBesServer {
     shutdown_tx: oneshot::Sender<()>,
     url: Url,
     pub build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    fail_lifecycle_events: Arc<Mutex<bool>>,
 }
 
 /// Implements the bes server proto contract
 struct MockBesService {
     build_tool_event_stream_requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    fail_lifecycle_events: Arc<Mutex<bool>>,
 }
 
 #[derive(Debug)]
@@ -274,8 +323,11 @@ impl MockBesServer {
         let url: Url = (&listen).into();
 
         let build_tool_event_stream_requests = Arc::new(Mutex::new(Vec::default()));
+        let fail_lifecycle_events = Arc::new(Mutex::new(false));
+
         let server = GrpcBesServer::listen(listen).bes_service(MockBesService {
             build_tool_event_stream_requests: build_tool_event_stream_requests.clone(),
+            fail_lifecycle_events: fail_lifecycle_events.clone(),
         });
         let handle = tokio::spawn(async move {
             server
@@ -290,7 +342,12 @@ impl MockBesServer {
             shutdown_tx,
             url,
             build_tool_event_stream_requests,
+            fail_lifecycle_events,
         }
+    }
+
+    pub async fn fail_lifecycle_events(&self) {
+        *self.fail_lifecycle_events.lock().await = true;
     }
 
     pub async fn shutdown(self) {
@@ -370,7 +427,11 @@ impl PublishBuildEvent for MockBesService {
         &self,
         _request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
-        Ok(Response::new(()))
+        if *self.fail_lifecycle_events.lock().await {
+            Err(Status::internal("oops"))
+        } else {
+            Ok(Response::new(()))
+        }
     }
 }
 
