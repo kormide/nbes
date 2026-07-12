@@ -83,6 +83,7 @@ rust_test(
         "@crates//:tonic",
         "@crates//:tower",
         "@crates//:url",
+        "@crates//:uuid",
     ],
 )
 

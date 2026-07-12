@@ -31,6 +31,7 @@ use tonic::{
 use tonic::{metadata::MetadataMap, transport::Channel};
 use tower::service_fn;
 use url::Url;
+use uuid::Uuid;
 
 #[tokio::test]
 pub async fn test_blackhole_acks_build_tool_events() -> Result<()> {
@@ -45,12 +46,13 @@ pub async fn test_blackhole_acks_build_tool_events() -> Result<()> {
 
     let mut client = connect_client_local(nbes_binding).await?;
 
+    let stream_id = build_tool_event_stream_id();
     let request_stream = futures::stream::iter([
-        build_tool_event(1),
-        build_tool_event(2),
-        build_tool_event(3),
-        build_tool_event(4),
-        build_tool_event(5),
+        build_tool_event(&stream_id, 1),
+        build_tool_event(&stream_id, 2),
+        build_tool_event(&stream_id, 3),
+        build_tool_event(&stream_id, 4),
+        build_tool_event(&stream_id, 5),
     ]);
 
     let request = Request::new(request_stream);
@@ -95,6 +97,49 @@ pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
 }
 
 #[tokio::test]
+pub async fn test_build_tool_event_client_sends_inconsistent_stream_id() -> Result<()> {
+    // This tests a misbehaving client, which we don't expect Bazel to be, but test it anyway
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: Vec::default(),
+        listen: nbes_binding.clone(),
+    };
+
+    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let stream_id = build_tool_event_stream_id();
+    let other_stream_id = build_tool_event_stream_id();
+    let request_stream = futures::stream::iter([
+        build_tool_event(&stream_id, 1),
+        build_tool_event(&other_stream_id, 2),
+    ]);
+
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    response_stream.message().await?;
+    let r2 = response_stream.message().await;
+
+    assert!(r2.is_err());
+    let status = r2.unwrap_err();
+    assert_eq!(Code::Internal, status.code());
+    assert_eq!(
+        "received inconsistent stream id from client",
+        status.message()
+    );
+
+    shutdown_nbes.send(()).unwrap();
+    nbes_handle.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
 pub async fn test_forward_responds_in_sequence() -> Result<()> {
     let server_uds = NamedTempFile::new()?;
     let mock_server = MockBesServer::spawn(
@@ -114,12 +159,13 @@ pub async fn test_forward_responds_in_sequence() -> Result<()> {
 
     let mut client = connect_client_local(nbes_binding).await?;
 
+    let stream_id = build_tool_event_stream_id();
     let request_stream = futures::stream::iter([
-        build_tool_event(1),
-        build_tool_event(2),
-        build_tool_event(3),
-        build_tool_event(4),
-        build_tool_event(5),
+        build_tool_event(&stream_id, 1),
+        build_tool_event(&stream_id, 2),
+        build_tool_event(&stream_id, 3),
+        build_tool_event(&stream_id, 4),
+        build_tool_event(&stream_id, 5),
     ]);
 
     let request = Request::new(request_stream);
@@ -192,7 +238,8 @@ pub async fn test_forwards_headers() -> Result<()> {
 
     let mut client = connect_client_local(nbes_binding).await?;
 
-    let request_stream = futures::stream::iter([build_tool_event(1)]);
+    let stream_id = build_tool_event_stream_id();
+    let request_stream = futures::stream::iter([build_tool_event(&stream_id, 1)]);
 
     let mut request = Request::new(request_stream);
 
@@ -250,8 +297,9 @@ pub async fn test_lifecycle_request_fails_when_one_backend_fails() -> Result<()>
 
     let mut client = connect_client_local(nbes_binding).await?;
 
+    let stream_id = build_lifecycle_event_stream_id();
     let response = client
-        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event()))
+        .publish_lifecycle_event(Request::new(build_enqueued_lifecycle_event(&stream_id)))
         .await;
 
     assert!(response.is_err());
@@ -275,21 +323,14 @@ pub async fn test_event_stream_request_fails_when_one_backend_fails() -> Result<
         Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
     )
     .await;
+    let stream_id = build_tool_event_stream_id();
     b1.mock_event_stream_responses([
         Ok(PublishBuildToolEventStreamResponse {
-            stream_id: Some(StreamId {
-                build_id: String::from(""),
-                invocation_id: String::from(""),
-                ..Default::default()
-            }),
+            stream_id: Some(stream_id.clone()),
             sequence_number: 1,
         }),
         Ok(PublishBuildToolEventStreamResponse {
-            stream_id: Some(StreamId {
-                build_id: String::from(""),
-                invocation_id: String::from(""),
-                ..Default::default()
-            }),
+            stream_id: Some(stream_id.clone()),
             sequence_number: 2,
         }),
     ])
@@ -302,11 +343,7 @@ pub async fn test_event_stream_request_fails_when_one_backend_fails() -> Result<
     .await;
     b2.mock_event_stream_responses([
         Ok(PublishBuildToolEventStreamResponse {
-            stream_id: Some(StreamId {
-                build_id: String::from(""),
-                invocation_id: String::from(""),
-                ..Default::default()
-            }),
+            stream_id: Some(stream_id.clone()),
             sequence_number: 1,
         }),
         Err(Status::internal("oops")),
@@ -325,8 +362,8 @@ pub async fn test_event_stream_request_fails_when_one_backend_fails() -> Result<
     let mut client = connect_client_local(nbes_binding).await?;
 
     let request_stream = futures::stream::iter([
-        build_tool_event(1),
-        build_tool_event(2), // b2 fails
+        build_tool_event(&stream_id, 1),
+        build_tool_event(&stream_id, 2), // b2 fails
     ]);
 
     let request = Request::new(request_stream);
@@ -567,14 +604,35 @@ impl PublishBuildEvent for MockBesService {
     }
 }
 
-fn build_tool_event(seq: i64) -> PublishBuildToolEventStreamRequest {
+fn build_tool_event_stream_id() -> StreamId {
+    StreamId {
+        build_id: String::from(Uuid::new_v4()),
+        invocation_id: String::from(Uuid::new_v4()),
+        component: BuildComponent::Tool.into(),
+    }
+}
+
+fn build_lifecycle_event_stream_id() -> StreamId {
+    StreamId {
+        build_id: Uuid::new_v4().to_string(),
+        // build lifecycle events don't have an invocation id
+        invocation_id: String::from(""),
+        component: BuildComponent::Controller.into(),
+    }
+}
+
+fn invocation_lifecycle_event_stream_id(build_id: &str) -> StreamId {
+    StreamId {
+        build_id: build_id.to_string(),
+        invocation_id: Uuid::new_v4().to_string(),
+        component: BuildComponent::Controller.into(),
+    }
+}
+
+fn build_tool_event(stream_id: &StreamId, seq: i64) -> PublishBuildToolEventStreamRequest {
     PublishBuildToolEventStreamRequest {
         ordered_build_event: Some(OrderedBuildEvent {
-            stream_id: Some(StreamId {
-                build_id: String::from(""),
-                invocation_id: String::from(""),
-                ..Default::default()
-            }),
+            stream_id: Some(stream_id.clone()),
             sequence_number: seq,
             ..Default::default()
         }),
@@ -583,11 +641,15 @@ fn build_tool_event(seq: i64) -> PublishBuildToolEventStreamRequest {
 }
 
 fn standard_lifecycle_events() -> Vec<PublishLifecycleEventRequest> {
+    let build_event_stream_id = build_lifecycle_event_stream_id();
+    let invocation_event_stream_id =
+        invocation_lifecycle_event_stream_id(&build_event_stream_id.build_id);
+
     vec![
-        build_enqueued_lifecycle_event(),
-        invocation_attempt_started_lifecycle_event(),
-        invocation_attempt_finished_lifecycle_event(),
-        build_finished_lifecycle_event(),
+        build_enqueued_lifecycle_event(&build_event_stream_id),
+        invocation_attempt_started_lifecycle_event(&invocation_event_stream_id),
+        invocation_attempt_finished_lifecycle_event(&invocation_event_stream_id),
+        build_finished_lifecycle_event(&build_event_stream_id),
     ]
 }
 
@@ -605,13 +667,9 @@ fn lifecycle_request(ordered_build_event: OrderedBuildEvent) -> PublishLifecycle
     }
 }
 
-fn build_enqueued_lifecycle_event() -> PublishLifecycleEventRequest {
+fn build_enqueued_lifecycle_event(stream_id: &StreamId) -> PublishLifecycleEventRequest {
     lifecycle_request(OrderedBuildEvent {
-        stream_id: Some(StreamId {
-            build_id: String::from("b3bcf30e-1513-4c0a-b340-0964bfb83707"),
-            invocation_id: String::default(),
-            component: BuildComponent::Controller.into(),
-        }),
+        stream_id: Some(stream_id.clone()),
         sequence_number: 1,
         event: Some(BuildEvent {
             event_time: Some(Timestamp {
@@ -623,13 +681,11 @@ fn build_enqueued_lifecycle_event() -> PublishLifecycleEventRequest {
     })
 }
 
-fn invocation_attempt_started_lifecycle_event() -> PublishLifecycleEventRequest {
+fn invocation_attempt_started_lifecycle_event(
+    stream_id: &StreamId,
+) -> PublishLifecycleEventRequest {
     lifecycle_request(OrderedBuildEvent {
-        stream_id: Some(StreamId {
-            build_id: String::from("b3bcf30e-1513-4c0a-b340-0964bfb83707"),
-            invocation_id: String::from("7e971239-65b5-4a14-9e54-967b4552a486"),
-            component: BuildComponent::Controller.into(),
-        }),
+        stream_id: Some(stream_id.clone()),
         sequence_number: 1,
         event: Some(BuildEvent {
             event_time: Some(Timestamp {
@@ -644,13 +700,11 @@ fn invocation_attempt_started_lifecycle_event() -> PublishLifecycleEventRequest 
     })
 }
 
-fn invocation_attempt_finished_lifecycle_event() -> PublishLifecycleEventRequest {
+fn invocation_attempt_finished_lifecycle_event(
+    stream_id: &StreamId,
+) -> PublishLifecycleEventRequest {
     lifecycle_request(OrderedBuildEvent {
-        stream_id: Some(StreamId {
-            build_id: String::from("b3bcf30e-1513-4c0a-b340-0964bfb83707"),
-            invocation_id: String::from("7e971239-65b5-4a14-9e54-967b4552a486"),
-            component: BuildComponent::Controller.into(),
-        }),
+        stream_id: Some(stream_id.clone()),
         sequence_number: 2,
         event: Some(BuildEvent {
             event_time: Some(Timestamp {
@@ -673,13 +727,9 @@ fn invocation_attempt_finished_lifecycle_event() -> PublishLifecycleEventRequest
     })
 }
 
-fn build_finished_lifecycle_event() -> PublishLifecycleEventRequest {
+fn build_finished_lifecycle_event(stream_id: &StreamId) -> PublishLifecycleEventRequest {
     lifecycle_request(OrderedBuildEvent {
-        stream_id: Some(StreamId {
-            build_id: String::from("b3bcf30e-1513-4c0a-b340-0964bfb83707"),
-            invocation_id: String::default(),
-            component: BuildComponent::Controller.into(),
-        }),
+        stream_id: Some(stream_id.clone()),
         sequence_number: 2,
         event: Some(BuildEvent {
             event_time: Some(Timestamp {

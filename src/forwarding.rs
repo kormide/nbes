@@ -323,6 +323,13 @@ impl PublishBuildEvent for BesForwardingService {
                         "[invocation_id={}] started build tool event stream",
                         state.iid()
                     );
+                } else if Some(stream_id) != state.stream_id.as_ref() {
+                    return Some((
+                        Err(Status::internal(
+                            "received inconsistent stream id from client",
+                        )),
+                        state,
+                    ));
                 }
 
                 // Wait for a corresponding response from each bes backend
