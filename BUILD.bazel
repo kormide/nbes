@@ -11,6 +11,7 @@ load(
     "@rules_rs//rs:rust_test.bzl",
     "rust_test",
 )
+load(":integration_test.bzl", "rust_integration_test")
 
 rust_library(
     name = "lib",
@@ -67,23 +68,16 @@ rust_test(
     crate = ":bin",
 )
 
-rust_test(
+rust_integration_test(
     name = "integration_test",
-    srcs = ["tests/test.rs"],
-    crate_root = "tests/test.rs",
+    src = "tests/test.rs",
     deps = [
         ":lib",
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
         "@crates//:anyhow",
-        "@crates//:futures",
-        "@crates//:hyper-util",
-        "@crates//:prost-types",
         "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",
-        "@crates//:tower",
-        "@crates//:url",
-        "@crates//:uuid",
     ],
 )
 
