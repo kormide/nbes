@@ -69,8 +69,45 @@ rust_test(
 )
 
 rust_integration_test(
-    name = "integration_test",
-    src = "tests/test.rs",
+    name = "blackhole_test",
+    src = "tests/blackhole.rs",
+    deps = [
+        ":lib",
+        "@crates//:anyhow",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_integration_test(
+    name = "forwarding_test",
+    src = "tests/forwarding.rs",
+    deps = [
+        ":lib",
+        "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
+        "@crates//:anyhow",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_integration_test(
+    name = "headers_test",
+    src = "tests/headers.rs",
+    deps = [
+        ":lib",
+        "@crates//:anyhow",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_integration_test(
+    name = "validation_test",
+    src = "tests/validation.rs",
     deps = [
         ":lib",
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",

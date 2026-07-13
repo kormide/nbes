@@ -14,7 +14,7 @@ def rust_integration_test(name, src, deps, **kwargs):
 
     A caveat is that the common test code is recompiled into each crate, which is not very Bazel
     idiomatic.
-    
+
     Args:
         name: Name of the test target
         src: Test file to ues as the crate root
@@ -38,6 +38,5 @@ def rust_integration_test(name, src, deps, **kwargs):
             "@crates//:url",
             "@crates//:uuid",
         ] + deps)),
-        **kwargs,
+        **kwargs
     )
-    

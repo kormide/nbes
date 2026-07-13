@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use anyhow::Result;
 use build_proto::google::devtools::build::v1::{
     BuildEvent, BuildStatus, OrderedBuildEvent, PublishBuildToolEventStreamRequest,
@@ -88,9 +90,10 @@ pub struct MockBesService {
 pub struct MockData {
     fail_lifecycle_events: bool,
     ack_all_build_stream_requests: bool,
-    pub build_tool_event_stream_requests: Vec<RecordedRequest>,
     build_tool_event_stream_responses:
         VecDeque<Result<PublishBuildToolEventStreamResponse, Status>>,
+    pub build_tool_event_stream_requests: Vec<RecordedRequest>,
+    pub lifecycle_requests: Vec<RecordedRequest>,
 }
 
 #[derive(Debug)]
@@ -106,8 +109,9 @@ impl MockBesServer {
         let mock = Arc::new(Mutex::new(MockData {
             fail_lifecycle_events: false,
             ack_all_build_stream_requests: true,
-            build_tool_event_stream_requests: Vec::default(),
             build_tool_event_stream_responses: VecDeque::default(),
+            build_tool_event_stream_requests: Vec::default(),
+            lifecycle_requests: Vec::default(),
         }));
 
         let server =
@@ -241,8 +245,17 @@ impl PublishBuildEvent for MockBesService {
 
     async fn publish_lifecycle_event(
         &self,
-        _request: Request<PublishLifecycleEventRequest>,
+        request: Request<PublishLifecycleEventRequest>,
     ) -> Result<Response<()>, Status> {
+        let (metadata, _, _) = request.into_parts();
+
+        let recorded_request = RecordedRequest { metadata };
+        self.mock
+            .lock()
+            .await
+            .lifecycle_requests
+            .push(recorded_request);
+
         if self.mock.lock().await.fail_lifecycle_events {
             Err(Status::internal("oops"))
         } else {
