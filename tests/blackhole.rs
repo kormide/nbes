@@ -20,7 +20,7 @@ pub async fn test_blackhole_acks_stream_events() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -43,8 +43,7 @@ pub async fn test_blackhole_acks_stream_events() -> Result<()> {
         expected_seq += 1;
     }
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
+    shutdown_nbes.await;
 
     Ok(())
 }
@@ -58,7 +57,7 @@ pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -68,8 +67,7 @@ pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
             .await?;
     }
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
+    shutdown_nbes.await;
 
     Ok(())
 }

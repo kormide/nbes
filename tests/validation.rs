@@ -1,5 +1,6 @@
 use anyhow::Result;
 use build_proto::google::devtools::build::v1::PublishBuildToolEventStreamResponse;
+use futures::join;
 use nbes::Binding;
 use nbes::Config;
 use tempfile::NamedTempFile;
@@ -22,7 +23,7 @@ pub async fn test_stream_client_sends_inconsistent_stream_id() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -48,8 +49,7 @@ pub async fn test_stream_client_sends_inconsistent_stream_id() -> Result<()> {
         status.message()
     );
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
+    shutdown_nbes.await;
 
     Ok(())
 }
@@ -77,7 +77,7 @@ pub async fn test_stream_backend_responds_with_wrong_stream_id() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -96,9 +96,7 @@ pub async fn test_stream_backend_responds_with_wrong_stream_id() -> Result<()> {
         status.message()
     );
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use build_proto::google::devtools::build::v1::PublishBuildToolEventStreamResponse;
+use futures::join;
 use nbes::Binding;
 use nbes::Config;
 use tempfile::NamedTempFile;
@@ -29,7 +30,7 @@ pub async fn test_stream_responds_in_sequence() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -52,9 +53,7 @@ pub async fn test_stream_responds_in_sequence() -> Result<()> {
         expected_seq += 1;
     }
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }
@@ -75,7 +74,7 @@ pub async fn test_acks_lifecycle_events() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -85,9 +84,7 @@ pub async fn test_acks_lifecycle_events() -> Result<()> {
             .await?;
     }
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }
@@ -116,7 +113,7 @@ pub async fn test_lifecycle_fails_when_one_backend_fails() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -130,10 +127,7 @@ pub async fn test_lifecycle_fails_when_one_backend_fails() -> Result<()> {
     assert_eq!(Code::Internal, status.code());
     assert_eq!("b2 failed lifecycle request: oops", status.message());
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
-    b2.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown(), b2.shutdown());
 
     Ok(())
 }
@@ -180,7 +174,7 @@ pub async fn test_stream_request_fails_when_one_backend_fails() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -201,10 +195,7 @@ pub async fn test_stream_request_fails_when_one_backend_fails() -> Result<()> {
     assert_eq!(Code::Internal, status.code());
     assert_eq!("b2 failed event stream request: oops", status.message());
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
-    b2.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown(), b2.shutdown());
 
     Ok(())
 }

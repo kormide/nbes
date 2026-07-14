@@ -34,7 +34,8 @@ use url::Url;
 use uuid::Uuid;
 
 /// Spawn nbes in a task and provide a oneshot channel to shut it down
-pub async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
+// pub async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Result<()>>) {
+pub async fn spawn_nbes(config: Config) -> impl Future<Output = ()> {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let handle = tokio::spawn(nbes::run(config, async {
@@ -45,7 +46,10 @@ pub async fn spawn_nbes(config: Config) -> (oneshot::Sender<()>, JoinHandle<Resu
     // a connection.
     tokio::task::yield_now().await;
 
-    (shutdown_tx, handle)
+    async move {
+        shutdown_tx.send(());
+        handle.await.unwrap().unwrap();
+    }
 }
 
 /// Create a bes client that connects to a locally running server

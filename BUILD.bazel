@@ -87,6 +87,7 @@ rust_integration_test(
         ":lib",
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
         "@crates//:anyhow",
+        "@crates//:futures",
         "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",
@@ -99,6 +100,7 @@ rust_integration_test(
     deps = [
         ":lib",
         "@crates//:anyhow",
+        "@crates//:futures",
         "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",
@@ -112,6 +114,7 @@ rust_integration_test(
         ":lib",
         "//third_party/googleapis/google/devtools/build/v1:build_rust_proto",
         "@crates//:anyhow",
+        "@crates//:futures",
         "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use futures::join;
 use nbes::Binding;
 use nbes::Config;
 use tempfile::NamedTempFile;
@@ -27,7 +28,7 @@ pub async fn test_stream_preserves_client_headers() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -54,9 +55,7 @@ pub async fn test_stream_preserves_client_headers() -> Result<()> {
     })
     .await;
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }
@@ -77,7 +76,7 @@ pub async fn test_lifecycle_preserves_client_headers() -> Result<()> {
         listen: nbes_binding.clone(),
     };
 
-    let (shutdown_nbes, nbes_handle) = spawn_nbes(config).await;
+    let shutdown_nbes = spawn_nbes(config).await;
 
     let mut client = connect_client_local(nbes_binding).await?;
 
@@ -99,9 +98,7 @@ pub async fn test_lifecycle_preserves_client_headers() -> Result<()> {
     })
     .await;
 
-    shutdown_nbes.send(()).unwrap();
-    nbes_handle.await??;
-    b1.shutdown().await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }
