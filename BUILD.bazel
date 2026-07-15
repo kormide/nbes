@@ -90,6 +90,7 @@ rust_integration_test(
         "@crates//:futures",
         "@crates//:tempfile",
         "@crates//:tokio",
+        "@crates//:tokio-stream",
         "@crates//:tonic",
     ],
 )

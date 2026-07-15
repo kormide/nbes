@@ -13,7 +13,10 @@ use build_proto::google::devtools::build::v1::{
     publish_lifecycle_event_request::ServiceLevel,
     stream_id::BuildComponent,
 };
-use futures::{Stream, stream::unfold};
+use futures::{
+    Stream, StreamExt,
+    stream::{self, unfold},
+};
 use hyper_util::rt::TokioIo;
 use nbes::Binding;
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
@@ -24,6 +27,7 @@ use tokio::{
     sync::{Mutex, oneshot},
     task::JoinHandle,
 };
+use tonic::IntoStreamingRequest;
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Endpoint, Uri},
@@ -93,9 +97,12 @@ pub struct MockBesService {
 
 pub struct MockData {
     fail_lifecycle_events: bool,
+    preprocess_events: bool,
     ack_all_build_stream_requests: bool,
     build_tool_event_stream_responses:
         VecDeque<Result<PublishBuildToolEventStreamResponse, Status>>,
+    response_stream: Option<PublishBuildToolEventStreamStream>,
+    pub processed_events: u32,
     pub build_tool_event_stream_requests: Vec<RecordedRequest>,
     pub lifecycle_requests: Vec<RecordedRequest>,
 }
@@ -112,9 +119,12 @@ impl MockBesServer {
 
         let mock = Arc::new(Mutex::new(MockData {
             fail_lifecycle_events: false,
+            preprocess_events: false,
             ack_all_build_stream_requests: true,
             build_tool_event_stream_responses: VecDeque::default(),
             build_tool_event_stream_requests: Vec::default(),
+            processed_events: 0,
+            response_stream: None,
             lifecycle_requests: Vec::default(),
         }));
 
@@ -153,8 +163,18 @@ impl MockBesServer {
         mock.build_tool_event_stream_responses.extend(responses);
     }
 
+    pub async fn mock_response_stream(&self, response_stream: PublishBuildToolEventStreamStream) {
+        let mut mock = self.mock.lock().await;
+
+        mock.response_stream.replace(response_stream);
+    }
+
     pub async fn fail_lifecycle_events(&self) {
         self.mock.lock().await.fail_lifecycle_events = true;
+    }
+
+    pub async fn preprocess_events(&self) {
+        self.mock.lock().await.preprocess_events = true;
     }
 
     pub async fn shutdown(self) {
@@ -180,11 +200,13 @@ impl PublishBuildEvent for MockBesService {
         request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
         struct State {
-            request_stream: Streaming<PublishBuildToolEventStreamRequest>,
+            request_stream: Pin<
+                Box<dyn Stream<Item = Result<PublishBuildToolEventStreamRequest, Status>> + Send>,
+            >,
             mock: Arc<Mutex<MockData>>,
         }
 
-        let (metadata, _, request_stream) = request.into_parts();
+        let (metadata, _, mut request_stream) = request.into_parts();
 
         let recorded_request = RecordedRequest { metadata };
         self.mock
@@ -193,58 +215,97 @@ impl PublishBuildEvent for MockBesService {
             .build_tool_event_stream_requests
             .push(recorded_request);
 
+        let request_stream = if self.mock.lock().await.preprocess_events {
+            eprintln!("preprocessing!");
+            let events: Vec<_> = request_stream.collect().await;
+            // let events: Vec<_> = self
+            //     .mock
+            //     .lock()
+            //     .await
+            //     .response_stream
+            //     .take()
+            //     .unwrap()
+            //     .collect()
+            //     .await;
+
+            eprintln!("received all!");
+            self.mock.lock().await.processed_events += events.len() as u32;
+            Box::pin(stream::iter(events))
+            // self.mock
+            //     .lock()
+            //     .await
+            //     .response_stream
+            //     .replace(Box::pin(stream::iter(events)));
+        } else {
+            Box::pin(request_stream)
+                as Pin<
+                    Box<
+                        dyn Stream<Item = Result<PublishBuildToolEventStreamRequest, Status>>
+                            + Send,
+                    >,
+                >
+        };
+
         let state = State {
             request_stream,
             mock: self.mock.clone(),
         };
 
-        Ok(Response::new(Box::pin(unfold(state, |mut state| async {
-            match state.request_stream.message().await {
-                Ok(request) => match request {
-                    Some(request) => {
-                        let PublishBuildToolEventStreamRequest {
-                            ordered_build_event:
-                                Some(OrderedBuildEvent {
-                                    stream_id: Some(ref stream_id),
-                                    sequence_number,
-                                    ..
-                                }),
-                            ..
-                        } = request
-                        else {
-                            return Some((
-                                Err(Status::invalid_argument(
-                                    "ordered_build_event field(s) are missing",
-                                )),
-                                state,
-                            ));
-                        };
+        if let Some(response_stream) = self.mock.lock().await.response_stream.take() {
+            // Prioritize the mocked response stream, if specified
+            Ok(Response::new(response_stream))
+        } else {
+            // Otherwise return the mocked responses one by one
+            Ok(Response::new(Box::pin(unfold(state, |mut state| async {
+                // let request = state.request_stream.message().await;
+                let request = state.request_stream.next().await;
+                match request {
+                    Some(request) => match request {
+                        Ok(request) => {
+                            let PublishBuildToolEventStreamRequest {
+                                ordered_build_event:
+                                    Some(OrderedBuildEvent {
+                                        stream_id: Some(ref stream_id),
+                                        sequence_number,
+                                        ..
+                                    }),
+                                ..
+                            } = request
+                            else {
+                                return Some((
+                                    Err(Status::invalid_argument(
+                                        "ordered_build_event field(s) are missing",
+                                    )),
+                                    state,
+                                ));
+                            };
 
-                        if state.mock.lock().await.ack_all_build_stream_requests {
-                            Some((
-                                Ok(PublishBuildToolEventStreamResponse {
-                                    stream_id: Some(stream_id.clone()),
-                                    sequence_number: sequence_number,
-                                }),
-                                state,
-                            ))
-                        } else {
-                            {
-                                state
-                                    .mock
-                                    .lock()
-                                    .await
-                                    .build_tool_event_stream_responses
-                                    .pop_front()
+                            if state.mock.lock().await.ack_all_build_stream_requests {
+                                Some((
+                                    Ok(PublishBuildToolEventStreamResponse {
+                                        stream_id: Some(stream_id.clone()),
+                                        sequence_number: sequence_number,
+                                    }),
+                                    state,
+                                ))
+                            } else {
+                                {
+                                    state
+                                        .mock
+                                        .lock()
+                                        .await
+                                        .build_tool_event_stream_responses
+                                        .pop_front()
+                                }
+                                .map(|response| (response, state))
                             }
-                            .map(|response| (response, state))
                         }
-                    }
+                        Err(_) => None,
+                    },
                     None => None,
-                },
-                Err(_) => None,
-            }
-        }))))
+                }
+            }))))
+        }
     }
 
     async fn publish_lifecycle_event(

@@ -1,9 +1,14 @@
+use std::task::Poll;
+
 use anyhow::Result;
 use build_proto::google::devtools::build::v1::PublishBuildToolEventStreamResponse;
 use futures::join;
 use nbes::Binding;
 use nbes::Config;
 use tempfile::NamedTempFile;
+use tokio::sync::mpsc;
+use tokio::task::yield_now;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Status};
 
 use crate::common::{
@@ -196,6 +201,82 @@ pub async fn test_stream_request_fails_when_one_backend_fails() -> Result<()> {
     assert_eq!("b2 failed event stream request: oops", status.message());
 
     join!(shutdown_nbes, b1.shutdown(), b2.shutdown());
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_request_stream_asynchronously_forwards_requests() -> Result<()> {
+    // Some BES backends (e.g., Buildbuddy) may way for the entire request stream
+    // to be sent before it beings sending responses. This test ensures that the
+    // entire request stream is forwarded asynchronously rather sending requests and
+    // receiving responses in lockstep.
+
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+
+    let (tx, rx) = mpsc::channel(1);
+    let response_stream = ReceiverStream::new(rx);
+    b1.preprocess_events().await;
+    b1.mock_response_stream(Box::pin(response_stream)).await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let shutdown_nbes = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let stream_id = build_tool_event_stream_id();
+    let request_stream = futures::stream::iter([
+        build_tool_event(&stream_id, 1),
+        build_tool_event(&stream_id, 2),
+        build_tool_event(&stream_id, 3),
+        build_tool_event(&stream_id, 4),
+        build_tool_event(&stream_id, 5),
+    ]);
+
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    yield_now().await;
+
+    // yield to show that we gave a chance for a response to be processed
+    yield_now().await;
+    yield_now().await;
+    yield_now().await;
+    yield_now().await;
+
+    let r1 = Box::pin(response_stream.message());
+
+    let Poll::Pending = futures::poll!(r1) else {
+        panic!("expected repsonse to not be ready");
+    };
+
+    // b1 received all requests
+    b1.assert(|data| {
+        assert_eq!(5, data.processed_events);
+    })
+    .await;
+
+    drop(tx);
+
+    // let mut expected_seq = 1;
+    // while let Some(response) = response_stream.message().await? {
+    //     assert_eq!(expected_seq, response.sequence_number);
+    //     expected_seq += 1;
+    // }
+
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }
