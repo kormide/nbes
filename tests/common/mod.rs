@@ -201,7 +201,10 @@ impl PublishBuildEvent for MockBesService {
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
         struct State {
             request_stream: Pin<
-                Box<dyn Stream<Item = Result<PublishBuildToolEventStreamRequest, Status>> + Send>,
+                Box<
+                    dyn Stream<Item = Result<Option<PublishBuildToolEventStreamRequest>, Status>>
+                        + Send,
+                >,
             >,
             mock: Arc<Mutex<MockData>>,
         }
@@ -216,8 +219,13 @@ impl PublishBuildEvent for MockBesService {
             .push(recorded_request);
 
         let request_stream = if self.mock.lock().await.preprocess_events {
+            let events: Vec<_> = Vec::new();
+            while let event = request_stream.message().await {
+                events.push(event);
+                self.mock.lock().await.processed_events += 1;
+            }
             eprintln!("preprocessing!");
-            let events: Vec<_> = request_stream.collect().await;
+            // let events: Vec<_> = request_stream.collect().await;
             // let events: Vec<_> = self
             //     .mock
             //     .lock()
@@ -229,7 +237,7 @@ impl PublishBuildEvent for MockBesService {
             //     .await;
 
             eprintln!("received all!");
-            self.mock.lock().await.processed_events += events.len() as u32;
+            // self.mock.lock().await.processed_events += events.len() as u32;
             Box::pin(stream::iter(events))
             // self.mock
             //     .lock()
@@ -240,8 +248,9 @@ impl PublishBuildEvent for MockBesService {
             Box::pin(request_stream)
                 as Pin<
                     Box<
-                        dyn Stream<Item = Result<PublishBuildToolEventStreamRequest, Status>>
-                            + Send,
+                        dyn Stream<
+                                Item = Result<Option<PublishBuildToolEventStreamRequest>, Status>,
+                            > + Send,
                     >,
                 >
         };
