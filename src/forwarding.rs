@@ -11,7 +11,7 @@ use futures::{
 };
 use hyper_util::rt::TokioIo;
 use log::{error, info};
-use std::{pin::Pin, str::FromStr};
+use std::{collections::HashMap, pin::Pin, str::FromStr};
 use tokio::{
     net::UnixStream,
     sync::{
@@ -22,7 +22,7 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tonic::{
     Request, Response, Status, Streaming,
-    metadata::{KeyAndValueRef, MetadataMap},
+    metadata::{KeyAndValueRef, MetadataMap, MetadataValue},
     transport::{Channel, ClientTlsConfig, Endpoint, Uri},
 };
 use tower::service_fn;
@@ -34,6 +34,7 @@ pub struct BesForwardingService {
 pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
+    pub remote_headers: MetadataMap,
     client: Option<PublishBuildEventClient<Channel>>,
 }
 
@@ -42,10 +43,11 @@ type PublishBuildToolEventStreamStream = Pin<
 >;
 
 impl BesBackend {
-    pub fn new(name: String, endpoint: Url) -> Self {
+    pub fn new(name: String, endpoint: Url, remote_headers: MetadataMap) -> Self {
         Self {
             name,
             endpoint,
+            remote_headers,
             client: None,
         }
     }
@@ -260,6 +262,7 @@ impl PublishBuildEvent for BesForwardingService {
 
             let mut request = Request::new(outbound_requests);
             copy_request_metadata(&metadata, &mut request);
+            copy_request_metadata(&backend.remote_headers, &mut request);
 
             incoming_responses.push((
                 backend.name.clone(),
@@ -455,6 +458,7 @@ impl PublishBuildEvent for BesForwardingService {
         for backend in &self.backends {
             let mut outbound_request = Request::new(message.clone());
             copy_request_metadata(&metadata, &mut outbound_request);
+            copy_request_metadata(&backend.remote_headers, &mut outbound_request);
             backend
                 .client
                 .as_ref()

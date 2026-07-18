@@ -7,6 +7,7 @@ use std::{
     path::PathBuf,
     str::FromStr,
 };
+use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use url::Url;
 
 /// A BES backend that forwards to other BES backends
@@ -24,7 +25,18 @@ pub struct Args {
     ///
     /// --bes_backend=name=my-bes-service,endpoint=[SCHEME://]HOST[:PORT]
     ///
-    /// Multiple backends can be configured by repeating the argument.
+    /// Supported properties include:
+    ///
+    ///   Human-readable identifier for the bes backend, displayed in logs
+    ///   name=[NAME]
+    ///
+    ///   Endpoint of the BES backend
+    ///   endpoint=[SCHEME://]HOST[:PORT]
+    ///
+    ///   Remote headers (can repeat to add multiple)
+    ///   remote_header=[NAME]=[VALUE]
+    ///
+    /// Multiple backends can be configured by repeating the bes_backend argument.
     #[arg(long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
@@ -42,6 +54,7 @@ pub struct Args {
 pub struct BesBackendArg {
     name: String,
     endpoint: Url,
+    remote_headers: MetadataMap,
 }
 
 fn socket_parser(socket: &str) -> std::result::Result<PathBuf, String> {
@@ -63,23 +76,31 @@ impl FromStr for BesBackendArg {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let args: Vec<&str> = s.split(",").collect();
-        let mut arg_map = HashMap::<&str, &str>::new();
+        let mut arg_map = HashMap::<&str, Vec<&str>>::new();
 
         if args.len() > 1 || args.len() == 1 && args[0].contains("=") {
             arg_map = args.into_iter().try_fold(arg_map, |mut arg_map, token| {
-                let kv: Vec<&str> = token.split("=").collect();
-                if kv.len() != 2 {
-                    return Err(Error::new(ErrorKind::InvalidValue));
+                match token.split_once("=") {
+                    Some((k, v)) => {
+                        arg_map.entry(k).or_insert_with(Vec::new).push(v);
+                        Ok(arg_map)
+                    }
+                    None => Err(Error::new(ErrorKind::InvalidValue)),
                 }
-                arg_map.insert(kv[0], kv[1]);
-                Ok(arg_map)
             })?;
         };
 
         let mut endpoint = if arg_map.len() > 0 {
             arg_map
                 .remove("endpoint")
-                .ok_or_else(|| Error::new(ErrorKind::MissingRequiredArgument))?
+                .ok_or_else(|| Error::new(ErrorKind::MissingRequiredArgument))
+                .and_then(|mut endpoints| {
+                    if endpoints.len() != 1 {
+                        Err(Error::new(ErrorKind::MissingRequiredArgument))
+                    } else {
+                        Ok(endpoints.remove(0))
+                    }
+                })?
         } else {
             s
         }
@@ -111,23 +132,52 @@ impl FromStr for BesBackendArg {
                 Ok(url)
             })?;
 
+        let mut names = arg_map
+            .remove("name")
+            .map(|names| names.into_iter().map(String::from).collect())
+            .unwrap_or_else(|| {
+                vec![
+                    rand::rng()
+                        .sample_iter(&Alphabetic)
+                        .take(8)
+                        .map(char::from)
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect::<String>(),
+                ]
+            });
+        if names.len() != 1 {
+            return Err(Error::new(ErrorKind::InvalidValue));
+        }
+        let name = names.remove(0);
+
+        let remote_headers = arg_map
+            .remove("remote_header")
+            .unwrap_or_default()
+            .iter()
+            .map(|header| match header.split_once("=") {
+                Some((k, v)) => Ok((k.to_string(), v.to_string())),
+                None => Err(Error::new(ErrorKind::InvalidValue)),
+            })
+            .try_fold(MetadataMap::new(), |mut metadata, kv| {
+                let (k, v) = kv?;
+                metadata.append(
+                    MetadataKey::from_str(&k).map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                    MetadataValue::from_str(&v).map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                );
+                Ok::<MetadataMap, Error>(metadata)
+            })?;
+
         Ok(BesBackendArg {
-            name: arg_map.remove("name").map(String::from).unwrap_or_else(|| {
-                rand::rng()
-                    .sample_iter(&Alphabetic)
-                    .take(8)
-                    .map(char::from)
-                    .map(|c| c.to_ascii_lowercase())
-                    .collect()
-            }),
+            name,
             endpoint,
+            remote_headers,
         })
     }
 }
 
 impl Into<BesBackend> for BesBackendArg {
     fn into(self) -> BesBackend {
-        BesBackend::new(self.name, self.endpoint)
+        BesBackend::new(self.name, self.endpoint, self.remote_headers)
     }
 }
 
@@ -226,5 +276,44 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!("unix", result.unwrap().endpoint.scheme());
+    }
+
+    #[test]
+    fn parse_bes_backend_endpoint_multiple_values_fail() {
+        let result = "endpoint=grpc://127.0.0.1:3000,endpoint=grpc://127.0.0.1:3001"
+            .parse::<BesBackendArg>();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bes_backend_name_multiple_values_fail() {
+        let result = "name=a,name=b,endpoint=grpc://127.0.0.1:3000".parse::<BesBackendArg>();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bes_backend_remote_header() {
+        let result = "endpoint=grpc://127.0.0.1:3000,remote_header=x-foobar-key=12345"
+            .parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let headers = result.unwrap().remote_headers;
+        assert_eq!(1, headers.len());
+        assert_eq!("12345", headers.get("x-foobar-key").unwrap());
+    }
+
+    #[test]
+    fn parse_bes_backend_remote_header_multiple() {
+        let result =
+            "endpoint=grpc://127.0.0.1:3000,remote_header=x-foobar-key=12345,remote_header=moo=cow"
+                .parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let headers = result.unwrap().remote_headers;
+        assert_eq!(2, headers.len());
+        assert_eq!("12345", headers.get("x-foobar-key").unwrap());
+        assert_eq!("cow", headers.get("moo").unwrap());
     }
 }

@@ -21,13 +21,21 @@ use hyper_util::rt::TokioIo;
 use nbes::Binding;
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
-use std::{collections::VecDeque, pin::Pin, sync::Arc};
+use std::str::FromStr;
+use std::{
+    collections::{HashMap, VecDeque},
+    pin::Pin,
+    sync::Arc,
+};
 use tokio::{
     net::UnixStream,
     sync::{Mutex, oneshot},
     task::JoinHandle,
 };
-use tonic::IntoStreamingRequest;
+use tonic::{
+    IntoStreamingRequest,
+    metadata::{MetadataKey, MetadataValue},
+};
 use tonic::{
     Request, Response, Status, Streaming,
     transport::{Endpoint, Uri},
@@ -88,6 +96,7 @@ pub struct MockBesServer {
     shutdown_tx: oneshot::Sender<()>,
     url: Url,
     mock: Arc<Mutex<MockData>>,
+    remote_headers: MetadataMap,
 }
 
 /// Implements the bes server proto contract
@@ -144,6 +153,7 @@ impl MockBesServer {
             shutdown_tx,
             url,
             mock,
+            remote_headers: MetadataMap::new(),
         }
     }
 
@@ -183,8 +193,19 @@ impl MockBesServer {
         self.handle.await.unwrap().unwrap();
     }
 
+    pub fn add_remote_header(&mut self, name: &str, value: &str) {
+        self.remote_headers.append(
+            MetadataKey::from_str(name).expect("invalid header name"),
+            MetadataValue::from_str(value).expect("invalid header value"),
+        );
+    }
+
     pub fn to_bes_backend(&self) -> BesBackend {
-        BesBackend::new(self.name.clone(), self.url.clone())
+        BesBackend::new(
+            self.name.clone(),
+            self.url.clone(),
+            self.remote_headers.clone(),
+        )
     }
 }
 

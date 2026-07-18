@@ -58,6 +58,7 @@ rust_binary(
         "@crates//:log",
         "@crates//:rand",
         "@crates//:tokio",
+        "@crates//:tonic",
         "@crates//:url",
     ],
 )
