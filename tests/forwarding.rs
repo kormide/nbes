@@ -291,3 +291,45 @@ pub async fn test_request_stream_asynchronously_forwards_requests() -> Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+pub async fn test_request_stream_starts_with_larger_sequence_number() -> Result<()> {
+    // A request stream may begin with a non-1 sequience number if the stream previously
+    // failed and the client retries from the successful event.
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend()],
+        listen: nbes_binding.clone(),
+    };
+
+    let shutdown_nbes = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let stream_id = build_tool_event_stream_id();
+    let request_stream = futures::stream::iter([
+        build_tool_event(&stream_id, 20),
+        build_tool_event(&stream_id, 21),
+    ]);
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    let r1 = response_stream.message().await?.unwrap();
+    assert_eq!(20, r1.sequence_number);
+
+    let r2 = response_stream.message().await?.unwrap();
+    assert_eq!(21, r2.sequence_number);
+
+    futures::join!(shutdown_nbes, b1.shutdown());
+
+    Ok(())
+}

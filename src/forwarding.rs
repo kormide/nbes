@@ -177,6 +177,8 @@ impl PublishBuildEvent for BesForwardingService {
             request_rx: mpsc::Receiver<PublishBuildToolEventStreamRequest>,
             /// Identifier of the build stream
             stream_id: Option<StreamId>,
+            /// Last sequence number processed
+            last_seq: i64,
         }
 
         impl State {
@@ -282,6 +284,7 @@ impl PublishBuildEvent for BesForwardingService {
             incoming_responses,
             request_rx,
             stream_id: None,
+            last_seq: 0,
         };
 
         Ok(Response::new(Box::pin(unfold(state, |mut state| {
@@ -317,19 +320,40 @@ impl PublishBuildEvent for BesForwardingService {
                     ));
                 };
 
-                if sequence_number == 1 {
+                if state.stream_id.is_none() {
                     state.stream_id.replace(stream_id.clone());
+                    state.last_seq = sequence_number;
                     info!(
-                        "[invocation_id={}] started build tool event stream",
+                        "[invocation_id={}] started build tool event stream at seq {sequence_number}",
                         state.iid()
                     );
-                } else if Some(stream_id) != state.stream_id.as_ref() {
-                    return Some((
-                        Err(Status::internal(
-                            "received inconsistent stream id from client",
-                        )),
-                        state,
-                    ));
+                } else {
+                    if Some(stream_id) != state.stream_id.as_ref() {
+                        error!(
+                            "[invocation_id={}] received inconsistent stream id from client",
+                            state.iid()
+                        );
+                        return Some((
+                            Err(Status::invalid_argument(
+                                "received inconsistent stream id from client",
+                            )),
+                            state,
+                        ));
+                    }
+                    let next_seq = state.last_seq + 1;
+                    if sequence_number != state.last_seq + 1 {
+                        error!(
+                            "[invocation_id={}] received seq {sequence_number} from client but expected {next_seq}",
+                            state.iid()
+                        );
+                        return Some((
+                            Err(Status::invalid_argument(format!(
+                                "expected seq {next_seq} but received {sequence_number}"
+                            ))),
+                            state,
+                        ));
+                    }
+                    state.last_seq = next_seq;
                 }
 
                 // Wait for a corresponding response from each bes backend
