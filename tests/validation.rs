@@ -21,6 +21,7 @@ pub async fn test_stream_client_sends_inconsistent_stream_id() -> Result<()> {
     let config = Config {
         bes_backends: Vec::default(),
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -63,6 +64,7 @@ pub async fn test_stream_client_sends_out_of_order_sequence() -> Result<()> {
     let config = Config {
         bes_backends: Vec::default(),
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -113,6 +115,7 @@ pub async fn test_stream_backend_responds_with_wrong_stream_id() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;

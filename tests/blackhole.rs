@@ -18,6 +18,7 @@ pub async fn test_blackhole_acks_stream_events() -> Result<()> {
     let config = Config {
         bes_backends: Vec::default(),
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -55,6 +56,7 @@ pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
     let config = Config {
         bes_backends: Vec::default(),
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;

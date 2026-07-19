@@ -18,15 +18,19 @@ use futures::{
     stream::{self, unfold},
 };
 use hyper_util::rt::TokioIo;
-use nbes::Binding;
+use nbes::{Binding, ServerTlsConfig};
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
-use std::str::FromStr;
+use rcgen::{CertifiedKey, generate_simple_self_signed};
 use std::{
     collections::{HashMap, VecDeque},
+    env,
+    path::Path,
     pin::Pin,
     sync::Arc,
 };
+use std::{fs, str::FromStr};
+use tempfile::NamedTempFile;
 use tokio::{
     net::UnixStream,
     sync::{Mutex, oneshot},
@@ -35,6 +39,7 @@ use tokio::{
 use tonic::{
     IntoStreamingRequest,
     metadata::{MetadataKey, MetadataValue},
+    transport::{Certificate, ClientTlsConfig},
 };
 use tonic::{
     Request, Response, Status, Streaming,
@@ -89,6 +94,52 @@ pub async fn connect_client_local(
     })
 }
 
+pub async fn connect_client_local_tls(
+    server_binding: Binding,
+    server_certificate: impl AsRef<Path>,
+    url: &str,
+) -> Result<PublishBuildEventClient<Channel>> {
+    let cert_pem = fs::read_to_string(server_certificate).unwrap();
+    Ok(match server_binding {
+        Binding::SocketAddr(_address) => {
+            todo!()
+        }
+        Binding::UnixDomainSocket(socket_path) => PublishBuildEventClient::new(
+            Endpoint::try_from(url.to_string())?
+                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(&cert_pem)))
+                .unwrap()
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let socket = socket_path.clone();
+                    async move {
+                        Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(socket).await?))
+                    }
+                }))
+                .await?,
+        ),
+    })
+}
+
+pub fn generate_tls_keypair<'a>(
+    subject_alt_names: impl Into<Vec<&'a str>>,
+) -> (NamedTempFile, NamedTempFile) {
+    let CertifiedKey { cert, signing_key } = generate_simple_self_signed(
+        subject_alt_names
+            .into()
+            .into_iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+
+    let cert_file = NamedTempFile::new_in(env::var("TEST_TMPDIR").unwrap()).unwrap();
+    let key_file = NamedTempFile::new_in(env::var("TEST_TMPDIR").unwrap()).unwrap();
+
+    fs::write(&cert_file, cert.pem()).unwrap();
+    fs::write(&key_file, signing_key.serialize_pem()).unwrap();
+
+    (cert_file, key_file)
+}
+
 /// A BES server that can be used to record requests and mock responses for testing.
 pub struct MockBesServer {
     name: String,
@@ -123,6 +174,23 @@ pub struct RecordedRequest {
 
 impl MockBesServer {
     pub async fn spawn(name: String, listen: Binding) -> MockBesServer {
+        Self::_spawn(name, listen, None::<(&Path, &Path)>).await
+    }
+
+    pub async fn spawn_tls(
+        name: String,
+        listen: Binding,
+        certificate_path: impl AsRef<Path>,
+        private_key_path: impl AsRef<Path>,
+    ) -> MockBesServer {
+        Self::_spawn(name, listen, Some((certificate_path, private_key_path))).await
+    }
+
+    pub async fn _spawn(
+        name: String,
+        listen: Binding,
+        tls_keypair: Option<(impl AsRef<Path>, impl AsRef<Path>)>, // cert, key
+    ) -> MockBesServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let url: Url = (&listen).into();
 
@@ -137,8 +205,15 @@ impl MockBesServer {
             lifecycle_requests: Vec::default(),
         }));
 
-        let server =
-            GrpcBesServer::listen(listen).bes_service(MockBesService { mock: mock.clone() });
+        let mut server = GrpcBesServer::listen(listen);
+
+        if let Some((certificate_path, private_key_path)) = tls_keypair {
+            server = server
+                .tls_config(certificate_path, private_key_path)
+                .unwrap();
+        }
+
+        let server = server.bes_service(MockBesService { mock: mock.clone() });
         let handle = tokio::spawn(async move {
             server
                 .serve(async move {

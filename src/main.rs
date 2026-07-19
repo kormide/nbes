@@ -2,8 +2,10 @@ use anyhow::Result;
 use args::Args;
 use clap::Parser;
 use log::{LevelFilter, info};
-use nbes::{Binding, Config};
+use nbes::{Binding, Config, ServerTlsConfig};
 use tokio::signal;
+
+use crate::args::ServerTlsArgs;
 
 mod args;
 
@@ -32,6 +34,17 @@ async fn main() -> Result<()> {
             .socket
             .map(|socket_path| Binding::UnixDomainSocket(socket_path))
             .unwrap_or_else(|| Binding::SocketAddr(args.listen)),
+        server_tls_config: match args.server_tls_config {
+            ServerTlsArgs {
+                server_tls_certificate: Some(certificate),
+                server_tls_private_key: Some(private_key),
+            } => Some(ServerTlsConfig {
+                certificate,
+                private_key,
+            }),
+            _ => None,
+        },
+        tls_certificates: args.tls_certificate,
     };
 
     let ctrl_c = async {

@@ -11,7 +11,12 @@ use futures::{
 };
 use hyper_util::rt::TokioIo;
 use log::{error, info};
-use std::{pin::Pin, str::FromStr};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    pin::Pin,
+    str::FromStr,
+};
 use tokio::{
     net::UnixStream,
     sync::{
@@ -23,19 +28,21 @@ use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
-    transport::{Channel, ClientTlsConfig, Endpoint, Uri},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri},
 };
 use tower::service_fn;
 use url::Url;
 
 pub struct BesForwardingService {
     backends: Vec<BesBackend>,
+    tls_certificates: Vec<PathBuf>,
 }
 pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
     pub remote_headers: MetadataMap,
     client: Option<PublishBuildEventClient<Channel>>,
+    uds_tls_uri: Option<Url>,
 }
 
 type PublishBuildToolEventStreamStream = Pin<
@@ -49,17 +56,19 @@ impl BesBackend {
             endpoint,
             remote_headers,
             client: None,
+            uds_tls_uri: None,
         }
     }
 
     /// Set up a client for a gRPC channel to the bes backend that does not
     /// connect until first use.
-    pub fn lazy_connect(&mut self) -> Result<()> {
+    pub fn lazy_connect(&mut self, tls_certificates: Vec<&Path>) -> Result<()> {
         if self.client.is_some() {
             return Ok(());
         }
 
-        let use_tls = ["grpcs", "https"].contains(&self.endpoint.scheme());
+        let use_tls =
+            ["grpcs", "https"].contains(&self.endpoint.scheme()) || self.uds_tls_uri.is_some();
         let use_uds = self.endpoint.scheme() == "unix";
 
         // Tonic doesn't appear to like "grpcs" as a scheme. Swap it with
@@ -76,8 +85,14 @@ impl BesBackend {
         };
 
         let mut channel = if use_uds {
-            // This url is ignored when connecting via a uds
-            Endpoint::try_from("http://[::]:50051")?
+            if let Some(endpoint) = self.uds_tls_uri.as_ref() {
+                // Domain needs to be set to match certificate if connecting with
+                // tls over a unix domain docket
+                Endpoint::try_from(endpoint.to_string())?
+            } else {
+                // This url is ignored when connecting via a uds
+                Endpoint::try_from("http://[::]:50051")?
+            }
         } else {
             Endpoint::from_str(endpoint.as_str()).context(format!(
                 "failed to parse endpoint for backend {}",
@@ -86,7 +101,13 @@ impl BesBackend {
         };
 
         if use_tls {
-            channel = channel.tls_config(ClientTlsConfig::new().with_native_roots())?;
+            let mut client_tls = ClientTlsConfig::new().with_native_roots();
+            for tls_certificate in tls_certificates {
+                let cert_pem = fs::read_to_string(tls_certificate)
+                    .context("failed to read tls certificate")?;
+                client_tls = client_tls.ca_certificate(Certificate::from_pem(cert_pem));
+            }
+            channel = channel.tls_config(client_tls)?;
         }
 
         // TODO: properties to potentially configure
@@ -118,19 +139,28 @@ impl BesBackend {
         self.client.replace(PublishBuildEventClient::new(channel));
         Ok(())
     }
+
+    pub fn use_uds_tls_uri(&mut self, endpoint: Url) {
+        self.uds_tls_uri.replace(endpoint);
+    }
 }
 
 impl BesForwardingService {
     pub fn new() -> Self {
         Self {
             backends: Vec::default(),
+            tls_certificates: Vec::default(),
         }
     }
 
     pub fn add_backend(&mut self, mut backend: BesBackend) -> Result<()> {
-        backend.lazy_connect()?;
+        backend.lazy_connect(self.tls_certificates.iter().map(|p| p.as_path()).collect())?;
         self.backends.push(backend);
         Ok(())
+    }
+
+    pub fn add_tls_trusted_cert(&mut self, tls_certificate: PathBuf) {
+        self.tls_certificates.push(tls_certificate);
     }
 
     fn validate_build_event_ack_response(

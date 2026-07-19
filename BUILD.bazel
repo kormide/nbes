@@ -110,6 +110,19 @@ rust_integration_test(
 )
 
 rust_integration_test(
+    name = "tls_test",
+    src = "tests/tls.rs",
+    deps = [
+        ":lib",
+        "@crates//:anyhow",
+        "@crates//:futures",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
+rust_integration_test(
     name = "validation_test",
     src = "tests/validation.rs",
     deps = [

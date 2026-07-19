@@ -26,6 +26,7 @@ pub async fn test_stream_preserves_client_headers() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -75,6 +76,7 @@ pub async fn test_stream_sends_custom_headers() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -125,6 +127,7 @@ pub async fn test_stream_does_not_send_custom_header_to_wrong_backend() -> Resul
     let config = Config {
         bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -172,6 +175,7 @@ pub async fn test_lifecycle_preserves_client_headers() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -217,6 +221,7 @@ pub async fn test_lifecycle_sends_custom_remote_headers() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -264,6 +269,7 @@ pub async fn test_lifecycle_does_not_send_custom_remote_headers_to_wrong_backend
     let config = Config {
         bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;

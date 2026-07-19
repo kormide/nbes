@@ -33,6 +33,7 @@ pub async fn test_stream_responds_in_sequence() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -77,6 +78,7 @@ pub async fn test_acks_lifecycle_events() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -116,6 +118,7 @@ pub async fn test_lifecycle_fails_when_one_backend_fails() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -177,6 +180,7 @@ pub async fn test_stream_request_fails_when_one_backend_fails() -> Result<()> {
     let config = Config {
         bes_backends: vec![b1.to_bes_backend(), b2.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -229,6 +233,7 @@ pub async fn test_request_stream_asynchronously_forwards_requests() -> Result<()
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
@@ -308,6 +313,7 @@ pub async fn test_request_stream_starts_with_larger_sequence_number() -> Result<
     let config = Config {
         bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
