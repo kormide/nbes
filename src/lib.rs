@@ -1,6 +1,9 @@
 use anyhow::Result;
 use log::{info, warn};
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    path::PathBuf,
+};
 use url::Url;
 
 use crate::{
@@ -11,9 +14,16 @@ use crate::{
 pub mod forwarding;
 pub mod server;
 
+#[derive(Default)]
 pub struct Config {
     pub bes_backends: Vec<BesBackend>,
     pub listen: Binding,
+    pub server_tls_config: Option<ServerTlsConfig>,
+}
+
+pub struct ServerTlsConfig {
+    pub certificate: PathBuf,
+    pub private_key: PathBuf,
 }
 
 #[derive(Clone)]
@@ -37,7 +47,13 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
         nbes_service.add_backend(backend)?;
     }
 
-    GrpcBesServer::listen(config.listen)
+    let mut server = GrpcBesServer::listen(config.listen);
+
+    if let Some(tls_config) = config.server_tls_config {
+        server = server.tls_config(&tls_config.certificate, &tls_config.private_key)?;
+    }
+
+    server
         .bes_service(nbes_service)
         .serve(shutdown_signal)
         .await?;
@@ -45,6 +61,15 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
     info!("shutting down");
 
     Ok(())
+}
+
+impl Default for Binding {
+    fn default() -> Self {
+        Binding::SocketAddr(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            9000,
+        )))
+    }
 }
 
 impl Into<Url> for &Binding {

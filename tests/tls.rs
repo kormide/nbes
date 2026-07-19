@@ -1,10 +1,15 @@
 use anyhow::Result;
+use futures::join;
 use nbes::Binding;
 use nbes::Config;
+use nbes::ServerTlsConfig;
 use tempfile::NamedTempFile;
 use tonic::Request;
 
+use crate::common::connect_client_local_tls;
+use crate::common::generate_tls_keypair;
 use crate::common::{
+    MockBesServer, build_enqueued_lifecycle_event, build_lifecycle_event_stream_id,
     build_tool_event, build_tool_event_stream_id, connect_client_local, spawn_nbes,
     standard_lifecycle_events,
 };
@@ -12,18 +17,31 @@ use crate::common::{
 mod common;
 
 #[tokio::test]
-pub async fn test_blackhole_acks_stream_events() -> Result<()> {
+pub async fn foobar() -> Result<()> {
+    let b1_uds = NamedTempFile::new()?;
+    let b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+
+    let (certificate, private_key) = generate_tls_keypair(["foobes.com"]);
+
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
     let config = Config {
-        bes_backends: Vec::default(),
+        bes_backends: vec![b1.to_bes_backend()],
         listen: nbes_binding.clone(),
-        ..Default::default()
+        server_tls_config: Some(ServerTlsConfig {
+            certificate: certificate.path().to_path_buf(),
+            private_key: private_key.path().to_path_buf(),
+        }),
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
 
-    let mut client = connect_client_local(nbes_binding).await?;
+    let mut client =
+        connect_client_local_tls(nbes_binding, &certificate, "https://foobes.com").await?;
 
     let stream_id = build_tool_event_stream_id();
     let request_stream = futures::stream::iter([
@@ -44,32 +62,7 @@ pub async fn test_blackhole_acks_stream_events() -> Result<()> {
         expected_seq += 1;
     }
 
-    shutdown_nbes.await;
-
-    Ok(())
-}
-
-#[tokio::test]
-pub async fn test_blackhole_acks_lifecycle_events() -> Result<()> {
-    let nbes_uds = NamedTempFile::new()?;
-    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
-    let config = Config {
-        bes_backends: Vec::default(),
-        listen: nbes_binding.clone(),
-        ..Default::default()
-    };
-
-    let shutdown_nbes = spawn_nbes(config).await;
-
-    let mut client = connect_client_local(nbes_binding).await?;
-
-    for lifecycle_event in standard_lifecycle_events() {
-        client
-            .publish_lifecycle_event(Request::new(lifecycle_event))
-            .await?;
-    }
-
-    shutdown_nbes.await;
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }

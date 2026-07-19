@@ -32,6 +32,8 @@ def rust_integration_test(name, src, deps, **kwargs):
             "@crates//:futures",
             "@crates//:hyper-util",
             "@crates//:prost-types",
+            "@crates//:rcgen",
+            "@crates//:tempfile",
             "@crates//:tokio",
             "@crates//:tonic",
             "@crates//:tower",

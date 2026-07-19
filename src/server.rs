@@ -2,10 +2,10 @@ use anyhow::{Context, Result};
 use build_proto::google::devtools::build::v1::publish_build_event_server::{
     PublishBuildEvent, PublishBuildEventServer,
 };
-use std::fs;
+use std::{fs, path::Path};
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::{Server, server::Router};
+use tonic::transport::{Identity, Server, ServerTlsConfig, server::Router};
 
 use crate::Binding;
 
@@ -59,7 +59,20 @@ impl GrpcBesServerConfig {
     // .concurrency_limit_per_connection(100)
     // .load_shed(true)
     // .max_concurrent_streams(Some(1000))
-    // .add_service(PublishBuildEventServer::new(nbes_service));
+
+    pub fn tls_config(mut self, certificate_path: &Path, private_key_path: &Path) -> Result<Self> {
+        let certificate =
+            fs::read_to_string(certificate_path).context("failed to read tls certificate")?;
+        let private_key =
+            fs::read_to_string(private_key_path).context("failed to read tls private key")?;
+        self.server = self
+            .server
+            .tls_config(
+                ServerTlsConfig::new().identity(Identity::from_pem(certificate, private_key)),
+            )
+            .context("failed to configure server tls")?;
+        Ok(self)
+    }
 
     pub fn bes_service(mut self, service: impl PublishBuildEvent) -> GrpcBesServer {
         GrpcBesServer {

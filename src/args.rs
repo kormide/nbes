@@ -1,4 +1,4 @@
-use clap::{Error, Parser, error::ErrorKind};
+use clap::{Args as ClapArgs, Error, Parser, error::ErrorKind};
 use nbes::forwarding::BesBackend;
 use rand::{RngExt, distr::Alphabetic};
 use std::{
@@ -48,6 +48,19 @@ pub struct Args {
     /// E.g. --socket unix:/path/to/socket
     #[arg(short, long, conflicts_with = "listen", value_parser = socket_parser)]
     pub socket: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub tls_server_config: ServerTlsArgs,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ServerTlsArgs {
+    /// File path to the server PEM private key for TLS
+    #[arg(long, requires = "tls_private_key")]
+    pub tls_certificate: Option<PathBuf>,
+    /// File path to the server PEM certificate for TLS
+    #[arg(long, requires = "tls_certificate")]
+    pub tls_private_key: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
