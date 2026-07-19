@@ -11,7 +11,7 @@ use futures::{
 };
 use hyper_util::rt::TokioIo;
 use log::{error, info};
-use std::{collections::HashMap, pin::Pin, str::FromStr};
+use std::{pin::Pin, str::FromStr};
 use tokio::{
     net::UnixStream,
     sync::{
@@ -22,7 +22,7 @@ use tokio::{
 use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tonic::{
     Request, Response, Status, Streaming,
-    metadata::{KeyAndValueRef, MetadataMap, MetadataValue},
+    metadata::{KeyAndValueRef, MetadataMap},
     transport::{Channel, ClientTlsConfig, Endpoint, Uri},
 };
 use tower::service_fn;
