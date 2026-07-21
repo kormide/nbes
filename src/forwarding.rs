@@ -41,6 +41,7 @@ pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
     pub remote_headers: MetadataMap,
+    pub asynchronous: bool,
     client: Option<PublishBuildEventClient<Channel>>,
     uds_tls_uri: Option<Url>,
 }
@@ -55,6 +56,7 @@ impl BesBackend {
             name,
             endpoint,
             remote_headers,
+            asynchronous: false,
             client: None,
             uds_tls_uri: None,
         }
@@ -138,6 +140,10 @@ impl BesBackend {
 
         self.client.replace(PublishBuildEventClient::new(channel));
         Ok(())
+    }
+
+    pub fn set_async(&mut self, asynchronous: bool) {
+        self.asynchronous = asynchronous;
     }
 
     pub fn use_uds_tls_uri(&mut self, endpoint: Url) {
@@ -294,23 +300,100 @@ impl PublishBuildEvent for BesForwardingService {
             copy_request_metadata(&metadata, &mut request);
             copy_request_metadata(&backend.remote_headers, &mut request);
 
-            incoming_responses.push((
-                backend.name.clone(),
-                backend
-                    .client
-                    .as_ref()
-                    .unwrap()
-                    .clone() // cloning clients is cheap
-                    .publish_build_tool_event_stream(request)
-                    .await
-                    .inspect_err(|e| {
-                        error!(
-                            "failed to initiate event stream with backend {}: {e}",
-                            backend.name
-                        )
-                    })
-                    .map(|response| response.into_inner())?,
-            ));
+            if backend.asynchronous {
+                let mut client = backend.client.as_ref().unwrap().clone();
+                let backend_name = backend.name.clone();
+                tokio::spawn(async move {
+                    let response = client
+                        .publish_build_tool_event_stream(request)
+                        .await
+                        .inspect_err(|e| {
+                            error!(
+                                "failed to initiate event stream with backend {}: {e}",
+                                backend_name
+                            )
+                        })?;
+
+                    let mut response_stream = response.into_inner();
+
+                    let mut stream_id: Option<StreamId> = None;
+                    loop {
+                        match response_stream.message().await {
+                            Ok(response) => match response {
+                                Some(response) => {
+                                    let PublishBuildToolEventStreamResponse {
+                                        stream_id: Some(response_stream_id),
+                                        ..
+                                    } = response
+                                    else {
+                                        error!("");
+                                        break;
+                                    };
+
+                                    stream_id.replace(response_stream_id);
+                                }
+                                None => {
+                                    match stream_id {
+                                        Some(stream_id) => {
+                                            info!(
+                                                "[invocation_id={}] asynchronously uploaded build tool event stream to backend {}",
+                                                stream_id.invocation_id, backend_name
+                                            );
+                                        }
+                                        None => {
+                                            error!(
+                                                "asynchronous build tool event stream unexpectedly closed by backend {}",
+                                                backend_name
+                                            );
+                                        }
+                                    }
+                                    break;
+                                }
+                            },
+                            Err(status) => {
+                                match stream_id {
+                                    Some(stream_id) => {
+                                        error!(
+                                            "[invocation_id={}] failed to upload asynchronous event stream to backend {}: {}",
+                                            stream_id.invocation_id,
+                                            backend_name,
+                                            status.message()
+                                        );
+                                    }
+                                    None => {
+                                        error!(
+                                            "asynchronous build tool event stream failed on first response from backend {}",
+                                            backend_name
+                                        );
+                                    }
+                                }
+                                info!("finished asynchronous upload to backend {}", backend_name);
+                                break;
+                            }
+                        }
+                    }
+
+                    Ok::<(), anyhow::Error>(())
+                });
+            } else {
+                incoming_responses.push((
+                    backend.name.clone(),
+                    backend
+                        .client
+                        .as_ref()
+                        .unwrap()
+                        .clone() // cloning clients is cheap
+                        .publish_build_tool_event_stream(request)
+                        .await
+                        .inspect_err(|e| {
+                            error!(
+                                "failed to initiate event stream with backend {}: {e}",
+                                backend.name
+                            )
+                        })
+                        .map(|response| response.into_inner())?,
+                ));
+            }
         }
 
         let state = State {

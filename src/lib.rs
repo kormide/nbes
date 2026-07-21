@@ -45,8 +45,10 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
 
     for backend in config.bes_backends {
         info!(
-            "configured backend {} -> {}",
-            backend.name, backend.endpoint
+            "configured backend {} -> {}{}",
+            backend.name,
+            backend.endpoint,
+            if backend.asynchronous { " (async)" } else { "" }
         );
         nbes_service.add_backend(backend)?;
     }

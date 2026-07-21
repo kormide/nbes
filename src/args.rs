@@ -27,14 +27,23 @@ pub struct Args {
     ///
     /// Supported properties include:
     ///
-    ///   Human-readable identifier for the bes backend, displayed in logs
     ///   name=[NAME]
     ///
-    ///   Endpoint of the BES backend
+    ///   Human-readable identifier for the bes backend, displayed in logs
+    ///
     ///   endpoint=[SCHEME://]HOST[:PORT]
     ///
-    ///   Remote headers (can repeat to add multiple)
+    ///   Endpoint of the BES backend
+    ///
     ///   remote_header=[NAME]=[VALUE]
+    ///
+    ///   Remote headers (can repeat to add multiple)
+    ///
+    ///   async=[true|false]
+    ///
+    ///   Handle responses asynchronously instead of blocking on them to send back
+    ///   to the client. If the stream fails the client won't be notified. Defaults
+    ///   to blocking behaviour (async=false).
     ///
     /// Multiple backends can be configured by repeating the bes_backend argument.
     #[arg(long = "bes_backend")]
@@ -73,6 +82,7 @@ pub struct BesBackendArg {
     name: String,
     endpoint: Url,
     remote_headers: MetadataMap,
+    asynchronous: bool,
 }
 
 fn socket_parser(socket: &str) -> std::result::Result<PathBuf, String> {
@@ -185,17 +195,43 @@ impl FromStr for BesBackendArg {
                 Ok::<MetadataMap, Error>(metadata)
             })?;
 
+        let asynchronous: bool = arg_map
+            .remove("async")
+            .or(Some(Vec::new()))
+            .and_then(|values| {
+                if values.len() > 1 {
+                    None
+                } else if values.len() == 1 {
+                    Some(values[0])
+                } else {
+                    Some("false")
+                }
+            })
+            .ok_or_else(|| Error::new(ErrorKind::InvalidValue))
+            .and_then(|asynchronous| {
+                asynchronous
+                    .parse()
+                    .map_err(|_| Error::new(ErrorKind::InvalidValue))
+            })?;
+
         Ok(BesBackendArg {
             name,
             endpoint,
             remote_headers,
+            asynchronous,
         })
     }
 }
 
 impl Into<BesBackend> for BesBackendArg {
     fn into(self) -> BesBackend {
-        BesBackend::new(self.name, self.endpoint, self.remote_headers)
+        let mut backend = BesBackend::new(self.name, self.endpoint, self.remote_headers);
+
+        if self.asynchronous {
+            backend.set_async(true);
+        }
+
+        backend
     }
 }
 
