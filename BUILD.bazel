@@ -70,6 +70,19 @@ rust_test(
 )
 
 rust_integration_test(
+    name = "async_test",
+    src = "tests/async.rs",
+    deps = [
+        ":lib",
+        "@crates//:anyhow",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+    ],
+)
+
+rust_integration_test(
     name = "blackhole_test",
     src = "tests/blackhole.rs",
     deps = [
