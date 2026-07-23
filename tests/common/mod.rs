@@ -39,7 +39,7 @@ use tokio::{
 use tonic::{
     IntoStreamingRequest,
     metadata::{MetadataKey, MetadataValue},
-    transport::{Certificate, ClientTlsConfig},
+    transport::{Certificate, ClientTlsConfig, Identity},
 };
 use tonic::{
     Request, Response, Status, Streaming,
@@ -119,6 +119,39 @@ pub async fn connect_client_local_tls(
     })
 }
 
+// pub async fn connect_client_local_mtls(
+//     server_binding: Binding,
+//     client_certificate: impl AsRef<Path>,
+//     client_key: impl AsRef<Path>,
+//     server_certificate: impl AsRef<Path>,
+//     url: &str,
+// ) -> Result<PublishBuildEventClient<Channel>> {
+//     let client_cert_pem = fs::read_to_string(client_certificate).unwrap();
+//     let client_key_pem = fs::read_to_string(client_key).unwrap();
+//     let server_cert_pem = fs::read_to_string(server_certificate).unwrap();
+//     Ok(match server_binding {
+//         Binding::SocketAddr(_address) => {
+//             todo!()
+//         }
+//         Binding::UnixDomainSocket(socket_path) => PublishBuildEventClient::new(
+//             Endpoint::try_from(url.to_string())?
+//                 .tls_config(
+//                     ClientTlsConfig::new()
+//                         .identity(Identity::from_pem(&client_cert_pem, &client_key_pem))
+//                         .ca_certificate(Certificate::from_pem(&server_cert_pem)),
+//                 )
+//                 .unwrap()
+//                 .connect_with_connector(service_fn(move |_: Uri| {
+//                     let socket = socket_path.clone();
+//                     async move {
+//                         Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(socket).await?))
+//                     }
+//                 }))
+//                 .await?,
+//         ),
+//     })
+// }
+
 pub fn generate_tls_keypair<'a>(
     subject_alt_names: impl Into<Vec<&'a str>>,
 ) -> (NamedTempFile, NamedTempFile) {
@@ -174,7 +207,7 @@ pub struct RecordedRequest {
 
 impl MockBesServer {
     pub async fn spawn(name: String, listen: Binding) -> MockBesServer {
-        Self::_spawn(name, listen, None::<(&Path, &Path)>).await
+        Self::_spawn(name, listen, None::<(&Path, &Path)>, Vec::default(), false).await
     }
 
     pub async fn spawn_tls(
@@ -183,13 +216,40 @@ impl MockBesServer {
         certificate_path: impl AsRef<Path>,
         private_key_path: impl AsRef<Path>,
     ) -> MockBesServer {
-        Self::_spawn(name, listen, Some((certificate_path, private_key_path))).await
+        Self::_spawn(
+            name,
+            listen,
+            Some((certificate_path, private_key_path)),
+            Vec::default(),
+            false,
+        )
+        .await
+    }
+
+    pub async fn spawn_mtls(
+        name: String,
+        listen: Binding,
+        certificate_path: impl AsRef<Path>,
+        private_key_path: impl AsRef<Path>,
+        client_tls_certificates: Vec<Box<dyn AsRef<Path>>>,
+        require_client_auth: bool,
+    ) -> MockBesServer {
+        Self::_spawn(
+            name,
+            listen,
+            Some((certificate_path, private_key_path)),
+            client_tls_certificates,
+            require_client_auth,
+        )
+        .await
     }
 
     pub async fn _spawn(
         name: String,
         listen: Binding,
         tls_keypair: Option<(impl AsRef<Path>, impl AsRef<Path>)>, // cert, key
+        client_tls_certificates: Vec<Box<dyn AsRef<Path>>>,
+        require_client_auth: bool,
     ) -> MockBesServer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let url: Url = (&listen).into();
@@ -209,7 +269,12 @@ impl MockBesServer {
 
         if let Some((certificate_path, private_key_path)) = tls_keypair {
             server = server
-                .tls_config(certificate_path, private_key_path)
+                .tls_config(
+                    certificate_path,
+                    private_key_path,
+                    client_tls_certificates,
+                    require_client_auth,
+                )
                 .unwrap();
         }
 

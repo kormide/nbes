@@ -25,6 +25,8 @@ pub struct Args {
     ///
     /// --bes_backend=name=my-bes-service,endpoint=[SCHEME://]HOST[:PORT]
     ///
+    /// Multiple backends can be configured by repeating the bes_backend argument.
+    ///
     /// Supported properties include:
     ///
     ///   name=[NAME]
@@ -45,7 +47,15 @@ pub struct Args {
     ///   to the client. If the stream fails the client won't be notified. Defaults
     ///   to blocking behaviour (async=false).
     ///
-    /// Multiple backends can be configured by repeating the bes_backend argument.
+    ///   tls_client_certificate=[PATH]
+    ///
+    ///   File path to a TLS PEM certificate used to identify the client to the backend.
+    ///   Use this when the backend requires mTLS authentication.
+    ///
+    ///   tls_client_key
+    ///
+    ///   File path to a TLS PEM private key used to identify the lient to the backend.
+    ///   Use this when the backend requires mTLS authentication.
     #[arg(long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
@@ -83,6 +93,8 @@ pub struct BesBackendArg {
     endpoint: Url,
     remote_headers: MetadataMap,
     asynchronous: bool,
+    tls_client_certificate: Option<PathBuf>,
+    tls_client_key: Option<PathBuf>,
 }
 
 fn socket_parser(socket: &str) -> std::result::Result<PathBuf, String> {
@@ -214,11 +226,55 @@ impl FromStr for BesBackendArg {
                     .map_err(|_| Error::new(ErrorKind::InvalidValue))
             })?;
 
+        let tls_client_certificate =
+            if let Some(mut tls_client_certificate) = arg_map.remove("tls_client_certificate") {
+                match tls_client_certificate.len() {
+                    0 => None,
+                    1 => Some(
+                        PathBuf::from_str(tls_client_certificate.pop().unwrap())
+                            .map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                    ),
+                    _ => {
+                        return Err(Error::new(ErrorKind::InvalidValue));
+                    }
+                }
+            } else {
+                None
+            };
+
+        let tls_client_key = if let Some(mut tls_client_key) = arg_map.remove("tls_client_key") {
+            match tls_client_key.len() {
+                0 => None,
+                1 => Some(
+                    PathBuf::from_str(tls_client_key.pop().unwrap())
+                        .map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                ),
+                _ => {
+                    return Err(Error::new(ErrorKind::InvalidValue));
+                }
+            }
+        } else {
+            None
+        };
+
+        if tls_client_certificate.is_some() && tls_client_key.is_none() {
+            panic!(
+                "tls_client_key is required when tls_client_certificate is specified for a backend"
+            );
+        }
+        if tls_client_key.is_some() && tls_client_certificate.is_none() {
+            panic!(
+                "tls_client_certificate is required when tls_client_key is specified for a backend"
+            );
+        }
+
         Ok(BesBackendArg {
             name,
             endpoint,
             remote_headers,
             asynchronous,
+            tls_client_certificate,
+            tls_client_key,
         })
     }
 }
@@ -229,6 +285,12 @@ impl Into<BesBackend> for BesBackendArg {
 
         if self.asynchronous {
             backend.set_async(true);
+        }
+
+        if let (Some(certificate), Some(private_key)) =
+            (self.tls_client_certificate, self.tls_client_key)
+        {
+            backend.set_client_tls_identity(certificate, private_key);
         }
 
         backend
