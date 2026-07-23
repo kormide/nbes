@@ -56,7 +56,7 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
     let mut server = GrpcBesServer::listen(config.listen);
 
     if let Some(tls_config) = config.server_tls_config {
-        server = server.tls_config(&tls_config.certificate, &tls_config.private_key)?;
+        server = server.tls_config(&tls_config.certificate, &tls_config.private_key, Vec::default(), false)?;
     }
 
     server

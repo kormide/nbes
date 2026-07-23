@@ -11,13 +11,13 @@ mod args;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-
     env_logger::builder()
         .filter_level(LevelFilter::Info)
         .format_target(false)
         .parse_env("NBES_LOG")
         .init();
+
+    let args = Args::parse();
 
     info!("starting nbes {}", env!("CARGO_PKG_VERSION"),);
     info!(

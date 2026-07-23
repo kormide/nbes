@@ -28,7 +28,7 @@ use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Uri},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity, Uri},
 };
 use tower::service_fn;
 use url::Url;
@@ -44,6 +44,12 @@ pub struct BesBackend {
     pub asynchronous: bool,
     client: Option<PublishBuildEventClient<Channel>>,
     uds_tls_uri: Option<Url>,
+    tls_client_identity: Option<TlsClientKeyPair>,
+}
+
+struct TlsClientKeyPair {
+    certificate: PathBuf,
+    private_key: PathBuf,
 }
 
 type PublishBuildToolEventStreamStream = Pin<
@@ -59,6 +65,7 @@ impl BesBackend {
             asynchronous: false,
             client: None,
             uds_tls_uri: None,
+            tls_client_identity: None,
         }
     }
 
@@ -104,10 +111,19 @@ impl BesBackend {
 
         if use_tls {
             let mut client_tls = ClientTlsConfig::new().with_native_roots();
+            // Add trusted server certificates
             for tls_certificate in tls_certificates {
                 let cert_pem = fs::read_to_string(tls_certificate)
                     .context("failed to read tls certificate")?;
                 client_tls = client_tls.ca_certificate(Certificate::from_pem(cert_pem));
+            }
+            // Add client tls cert/key for mTLS
+            if let Some(tls_client_identity) = self.tls_client_identity.as_ref() {
+                let cert_pem = fs::read_to_string(&tls_client_identity.certificate)
+                    .context("failed to read tls client certificate")?;
+                let key_pem = fs::read_to_string(&tls_client_identity.private_key)
+                    .context("failed to read tls client key")?;
+                client_tls = client_tls.identity(Identity::from_pem(&cert_pem, &key_pem));
             }
             channel = channel.tls_config(client_tls)?;
         }
@@ -144,6 +160,13 @@ impl BesBackend {
 
     pub fn set_async(&mut self, asynchronous: bool) {
         self.asynchronous = asynchronous;
+    }
+
+    pub fn set_client_tls_identity(&mut self, certificate: PathBuf, private_key: PathBuf) {
+        self.tls_client_identity.replace(TlsClientKeyPair {
+            certificate,
+            private_key,
+        });
     }
 
     pub fn use_uds_tls_uri(&mut self, endpoint: Url) {
