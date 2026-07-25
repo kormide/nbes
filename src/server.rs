@@ -63,16 +63,16 @@ impl GrpcBesServerConfig {
     pub fn tls_config(
         mut self,
         certificate_path: impl AsRef<Path>,
-        private_key_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
         client_certificate_paths: Vec<Box<dyn AsRef<Path>>>,
         require_client_auth: bool,
     ) -> Result<Self> {
         let certificate =
             fs::read_to_string(certificate_path).context("failed to read tls certificate")?;
-        let private_key =
-            fs::read_to_string(private_key_path).context("failed to read tls private key")?;
+        let key =
+            fs::read_to_string(key_path).context("failed to read tls private key")?;
         let mut tls_config = ServerTlsConfig::new()
-            .identity(Identity::from_pem(certificate, private_key))
+            .identity(Identity::from_pem(certificate, key))
             .client_auth_optional(require_client_auth);
         for client_certificate_path in client_certificate_paths {
             let client_certificate = fs::read_to_string(client_certificate_path.as_ref())

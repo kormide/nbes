@@ -18,7 +18,7 @@ use futures::{
     stream::{self, unfold},
 };
 use hyper_util::rt::TokioIo;
-use nbes::{Binding, ServerTlsConfig};
+use nbes::{Binding, ServerTlsConfig, forwarding::BesBackendBuilder};
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
 use rcgen::{CertifiedKey, generate_simple_self_signed};
@@ -181,12 +181,12 @@ impl MockBesServer {
         name: String,
         listen: Binding,
         certificate_path: impl AsRef<Path>,
-        private_key_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
     ) -> MockBesServer {
         Self::_spawn(
             name,
             listen,
-            Some((certificate_path, private_key_path)),
+            Some((certificate_path, key_path)),
             Vec::default(),
             false,
         )
@@ -197,14 +197,14 @@ impl MockBesServer {
         name: String,
         listen: Binding,
         certificate_path: impl AsRef<Path>,
-        private_key_path: impl AsRef<Path>,
+        key_path: impl AsRef<Path>,
         client_tls_certificates: Vec<Box<dyn AsRef<Path>>>,
         require_client_auth: bool,
     ) -> MockBesServer {
         Self::_spawn(
             name,
             listen,
-            Some((certificate_path, private_key_path)),
+            Some((certificate_path, key_path)),
             client_tls_certificates,
             require_client_auth,
         )
@@ -234,11 +234,11 @@ impl MockBesServer {
 
         let mut server = GrpcBesServer::listen(listen);
 
-        if let Some((certificate_path, private_key_path)) = tls_keypair {
+        if let Some((certificate_path, key_path)) = tls_keypair {
             server = server
                 .tls_config(
                     certificate_path,
-                    private_key_path,
+                    key_path,
                     client_tls_certificates,
                     require_client_auth,
                 )
@@ -308,11 +308,11 @@ impl MockBesServer {
     }
 
     pub fn to_bes_backend(&self) -> BesBackend {
-        BesBackend::new(
-            self.name.clone(),
-            self.url.clone(),
-            self.remote_headers.clone(),
-        )
+        BesBackend::builder(self.url.to_string())
+            .unwrap()
+            .name(self.name.clone())
+            .remote_headers(self.remote_headers.clone())
+            .build()
     }
 }
 

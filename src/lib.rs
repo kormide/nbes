@@ -1,8 +1,10 @@
 use anyhow::Result;
 use log::{info, warn};
 use std::{
+    fmt::Display,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
+    str::FromStr,
 };
 use url::Url;
 
@@ -24,7 +26,7 @@ pub struct Config {
 
 pub struct ServerTlsConfig {
     pub certificate: PathBuf,
-    pub private_key: PathBuf,
+    pub key: PathBuf,
 }
 
 #[derive(Clone)]
@@ -48,7 +50,7 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
             "configured backend {} -> {}{}",
             backend.name,
             backend.endpoint,
-            if backend.asynchronous { " (async)" } else { "" }
+            if backend.r#async { " (async)" } else { "" }
         );
         nbes_service.add_backend(backend)?;
     }
@@ -56,7 +58,12 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
     let mut server = GrpcBesServer::listen(config.listen);
 
     if let Some(tls_config) = config.server_tls_config {
-        server = server.tls_config(&tls_config.certificate, &tls_config.private_key, Vec::default(), false)?;
+        server = server.tls_config(
+            &tls_config.certificate,
+            &tls_config.key,
+            Vec::default(),
+            false,
+        )?;
     }
 
     server
@@ -89,5 +96,36 @@ impl Into<Url> for &Binding {
                     .expect("failed to parse url from unix domain socket path")
             }
         }
+    }
+}
+
+impl Display for Binding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Binding::SocketAddr(socket_addr) => {
+                write!(f, "{socket_addr}")
+            }
+            Binding::UnixDomainSocket(socket_path) => {
+                write!(f, "unix:{}", socket_path.display())
+            }
+        }
+    }
+}
+
+impl FromStr for Binding {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s.starts_with("unix:/") {
+            let socket_path = Url::parse(s)?
+                .to_file_path()
+                .map_err(|_| anyhow::anyhow!("invalid unix domain socket path"))?;
+
+            Binding::UnixDomainSocket(socket_path)
+        } else {
+            let address: SocketAddrV4 = s.parse()?;
+
+            Binding::SocketAddr(SocketAddr::V4(address))
+        })
     }
 }

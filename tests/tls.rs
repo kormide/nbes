@@ -19,7 +19,7 @@ mod common;
 
 #[tokio::test]
 pub async fn can_connect_via_tls() -> Result<()> {
-    let (certificate, private_key) = generate_tls_keypair(["foobes.com"]);
+    let (certificate, key) = generate_tls_keypair(["foobes.com"]);
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -27,7 +27,7 @@ pub async fn can_connect_via_tls() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: key.path().to_path_buf(),
         }),
         ..Default::default()
     };
@@ -57,7 +57,7 @@ pub async fn forwards_to_non_tls_backend() -> Result<()> {
     )
     .await;
 
-    let (certificate, private_key) = generate_tls_keypair(["foobes.com"]);
+    let (certificate, key) = generate_tls_keypair(["foobes.com"]);
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -66,7 +66,7 @@ pub async fn forwards_to_non_tls_backend() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: key.path().to_path_buf(),
         }),
         ..Default::default()
     };
@@ -102,18 +102,18 @@ pub async fn forwards_to_non_tls_backend() -> Result<()> {
 
 #[tokio::test]
 pub async fn forwards_to_tls_backend() -> Result<()> {
-    let (b1_certificate, b1_private_key) = generate_tls_keypair(["foobes.com"]);
+    let (b1_certificate, b1_key) = generate_tls_keypair(["foobes.com"]);
 
     let b1_uds = NamedTempFile::new()?;
     let b1 = MockBesServer::spawn_tls(
         String::from("b1"),
         Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
         &b1_certificate,
-        &b1_private_key,
+        &b1_key,
     )
     .await;
 
-    let (certificate, private_key) = generate_tls_keypair(["barbes.com"]);
+    let (certificate, key) = generate_tls_keypair(["barbes.com"]);
 
     let nbes_uds = NamedTempFile::new()?;
     let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
@@ -126,7 +126,7 @@ pub async fn forwards_to_tls_backend() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: key.path().to_path_buf(),
         }),
         tls_certificates: vec![b1_certificate.path().to_path_buf()],
     };
@@ -164,15 +164,15 @@ pub async fn forwards_to_tls_backend() -> Result<()> {
 pub async fn backend_requires_mtls() -> Result<()> {
     // Test client tls cert/key setup for a backend that requires mTLS
 
-    let (b1_certificate, b1_private_key) = generate_tls_keypair(["foobes.com"]);
-    let (client_certificate, client_private_key) = generate_tls_keypair(["client-id-12345"]);
+    let (b1_certificate, b1_key) = generate_tls_keypair(["foobes.com"]);
+    let (client_certificate, client_key) = generate_tls_keypair(["client-id-12345"]);
 
     let b1_uds = NamedTempFile::new()?;
     let b1 = MockBesServer::spawn_mtls(
         String::from("b1"),
         Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
         &b1_certificate,
-        &b1_private_key,
+        &b1_key,
         vec![Box::new(client_certificate.path().to_path_buf())],
         true,
     )
@@ -185,7 +185,7 @@ pub async fn backend_requires_mtls() -> Result<()> {
     b1_bes_backend.use_uds_tls_uri(Url::parse("https://foobes.com")?);
     b1_bes_backend.set_client_tls_identity(
         client_certificate.path().to_path_buf(),
-        client_private_key.path().to_path_buf(),
+        client_key.path().to_path_buf(),
     );
 
     let config = Config {

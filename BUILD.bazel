@@ -28,6 +28,7 @@ rust_library(
         "@crates//:futures",
         "@crates//:hyper-util",
         "@crates//:log",
+        "@crates//:rand",
         "@crates//:tokio",
         "@crates//:tokio-stream",
         "@crates//:tonic",
@@ -46,6 +47,7 @@ rust_binary(
     name = "bin",
     srcs = [
         "src/args.rs",
+        "src/config_file.rs",
         "src/main.rs",
     ],
     binary_name = "nbes",
@@ -56,10 +58,10 @@ rust_binary(
         "@crates//:clap",
         "@crates//:env_logger",
         "@crates//:log",
-        "@crates//:rand",
+        "@crates//:serde",
+        "@crates//:serde_yaml_ng",
         "@crates//:tokio",
         "@crates//:tonic",
-        "@crates//:url",
     ],
 )
 
