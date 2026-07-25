@@ -1,13 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use args::Args;
 use clap::Parser;
-use log::{LevelFilter, info};
-use nbes::{Binding, Config, ServerTlsConfig};
+use log::{LevelFilter, info, warn};
+use nbes::{Config, ServerTlsConfig, forwarding::BesBackend};
+use std::collections::HashMap;
 use tokio::signal;
 
-use crate::args::ServerTlsArgs;
+use crate::config_file::ConfigFile;
 
 mod args;
+mod config_file;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,34 +20,13 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    args.validate().context("invalid args")?;
 
     info!("starting nbes {}", env!("CARGO_PKG_VERSION"),);
-    info!(
-        "listening on {}",
-        args.socket
-            .as_ref()
-            .map(|s| format!("unix:{}", s.display()))
-            .unwrap_or(args.listen.to_string())
-    );
 
-    let config = Config {
-        bes_backends: args.bes_backends.into_iter().map(|b| b.into()).collect(),
-        listen: args
-            .socket
-            .map(|socket_path| Binding::UnixDomainSocket(socket_path))
-            .unwrap_or_else(|| Binding::SocketAddr(args.listen)),
-        server_tls_config: match args.server_tls_config {
-            ServerTlsArgs {
-                server_tls_certificate: Some(certificate),
-                server_tls_private_key: Some(private_key),
-            } => Some(ServerTlsConfig {
-                certificate,
-                private_key,
-            }),
-            _ => None,
-        },
-        tls_certificates: args.tls_certificate,
-    };
+    let config = build_config(args)?;
+
+    info!("listening on {}", config.listen);
 
     let ctrl_c = async {
         signal::ctrl_c()
@@ -57,4 +38,87 @@ async fn main() -> Result<()> {
     nbes::run(config, ctrl_c).await?;
 
     Ok(())
+}
+
+/// Build an nbes configuration from command-line args and a configuration file.
+fn build_config(args: Args) -> Result<Config> {
+    let config_file = match args.config {
+        Some(path) => Some(ConfigFile::parse(&path)?),
+        None => None,
+    }
+    .unwrap_or_default();
+
+    let config_backends: Vec<BesBackend> = config_file
+        .bes_backends
+        .into_iter()
+        .map(|b| <config_file::BesBackend as TryInto<BesBackend>>::try_into(b))
+        .collect::<Result<_, _>>()?;
+    let args_backends: Vec<BesBackend> = args
+        .bes_backends
+        .into_iter()
+        .map(|b| b.try_into())
+        .collect::<Result<Vec<BesBackend>>>()?;
+    let bes_backends = combine_backends_from_config_and_args(config_backends, args_backends);
+
+    let server_tls_certificate = args
+        .server_tls_certificate
+        .or(config_file.server.tls.certificate);
+    let server_tls_key = args.server_tls_key.or(config_file.server.tls.key);
+
+    let server_tls_config = match (server_tls_certificate, server_tls_key) {
+        (Some(certificate), Some(key)) => Some(ServerTlsConfig { certificate, key }),
+        (Some(_), None) => anyhow::bail!(
+            "server tls certificate provided but key is missing; provide the --server_tls_key arg or server.tls.key config option"
+        ),
+        (None, Some(_)) => anyhow::bail!(
+            "server tls key provided but certificate is missing; provide the --server_tls_certificate arg or server.tls.certificate config option"
+        ),
+        (None, None) => None,
+    };
+
+    let config = Config {
+        bes_backends,
+        listen: args
+            .listen
+            .or(config_file.server.listen)
+            .unwrap_or_else(|| String::from("0.0.0.0:9000"))
+            .parse()
+            .context(
+                "failed to parse server binding (bad --listen arg or server.listen config option)",
+            )?,
+        server_tls_config,
+        tls_certificates: args
+            .tls_certificate
+            .into_iter()
+            .chain(config_file.tls_certificates.into_iter())
+            .collect(),
+    };
+
+    Ok(config)
+}
+
+/// Combine bes backends declared in the config file and provided as arguments.
+/// Backends in args that have the same name as a config backend take priority.
+fn combine_backends_from_config_and_args(
+    config_backends: Vec<BesBackend>,
+    args_backends: Vec<BesBackend>,
+) -> Vec<BesBackend> {
+    let mut backends: HashMap<String, BesBackend> = config_backends
+        .into_iter()
+        .map(|b| (b.name.clone(), b))
+        .collect();
+
+    for backend in args_backends {
+        if let Some(existing) = backends.get_mut(&backend.name) {
+            warn!(
+                "bes backend {} in config file will be overridden by backend specifieid in arg with the same name",
+                backend.name
+            );
+            *existing = backend;
+        } else {
+            backends.insert(backend.name.clone(), backend);
+        }
+    }
+
+    backends.into_values().collect()
 }

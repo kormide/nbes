@@ -18,7 +18,7 @@ use futures::{
     stream::{self, unfold},
 };
 use hyper_util::rt::TokioIo;
-use nbes::{Binding, ServerTlsConfig};
+use nbes::{Binding, ServerTlsConfig, forwarding::BesBackendBuilder};
 use nbes::{Config, forwarding::BesBackend, server::GrpcBesServer};
 use prost_types::Timestamp;
 use rcgen::{CertifiedKey, generate_simple_self_signed};
@@ -308,11 +308,11 @@ impl MockBesServer {
     }
 
     pub fn to_bes_backend(&self) -> BesBackend {
-        BesBackend::new(
-            self.name.clone(),
-            self.url.clone(),
-            self.remote_headers.clone(),
-        )
+        BesBackend::builder(self.url.to_string())
+            .unwrap()
+            .name(self.name.clone())
+            .remote_headers(self.remote_headers.clone())
+            .build()
     }
 }
 

@@ -27,7 +27,7 @@ pub async fn can_connect_via_tls() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: private_key.path().to_path_buf(),
         }),
         ..Default::default()
     };
@@ -66,7 +66,7 @@ pub async fn forwards_to_non_tls_backend() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: private_key.path().to_path_buf(),
         }),
         ..Default::default()
     };
@@ -126,7 +126,7 @@ pub async fn forwards_to_tls_backend() -> Result<()> {
         listen: nbes_binding.clone(),
         server_tls_config: Some(ServerTlsConfig {
             certificate: certificate.path().to_path_buf(),
-            private_key: private_key.path().to_path_buf(),
+            key: private_key.path().to_path_buf(),
         }),
         tls_certificates: vec![b1_certificate.path().to_path_buf()],
     };

@@ -11,6 +11,7 @@ use futures::{
 };
 use hyper_util::rt::TokioIo;
 use log::{error, info};
+use rand::{RngExt, distr::Alphabetic};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -41,7 +42,7 @@ pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
     pub remote_headers: MetadataMap,
-    pub asynchronous: bool,
+    pub r#async: bool,
     client: Option<PublishBuildEventClient<Channel>>,
     uds_tls_uri: Option<Url>,
     tls_client_identity: Option<TlsClientKeyPair>,
@@ -56,19 +57,18 @@ type PublishBuildToolEventStreamStream = Pin<
     Box<dyn Stream<Item = Result<PublishBuildToolEventStreamResponse, Status>> + Send + 'static>,
 >;
 
-impl BesBackend {
-    pub fn new(name: String, endpoint: Url, remote_headers: MetadataMap) -> Self {
-        Self {
-            name,
-            endpoint,
-            remote_headers,
-            asynchronous: false,
-            client: None,
-            uds_tls_uri: None,
-            tls_client_identity: None,
-        }
-    }
+pub struct BesBackendBuilder {
+    name: Option<String>,
+    endpoint: Url,
+    remote_headers: MetadataMap,
+    r#async: bool,
+    tls_client_identity: Option<TlsClientKeyPair>,
+}
 
+impl BesBackend {
+    pub fn builder(endpoint: impl Into<String>) -> Result<BesBackendBuilder> {
+        BesBackendBuilder::new(endpoint.into())
+    }
     /// Set up a client for a gRPC channel to the bes backend that does not
     /// connect until first use.
     pub fn lazy_connect(&mut self, tls_certificates: Vec<&Path>) -> Result<()> {
@@ -158,8 +158,8 @@ impl BesBackend {
         Ok(())
     }
 
-    pub fn set_async(&mut self, asynchronous: bool) {
-        self.asynchronous = asynchronous;
+    pub fn set_async(&mut self, r#async: bool) {
+        self.r#async = r#async;
     }
 
     pub fn set_client_tls_identity(&mut self, certificate: PathBuf, private_key: PathBuf) {
@@ -323,7 +323,7 @@ impl PublishBuildEvent for BesForwardingService {
             copy_request_metadata(&metadata, &mut request);
             copy_request_metadata(&backend.remote_headers, &mut request);
 
-            if backend.asynchronous {
+            if backend.r#async {
                 let mut client = backend.client.as_ref().unwrap().clone();
                 let backend_name = backend.name.clone();
                 tokio::spawn(async move {
@@ -620,6 +620,97 @@ impl PublishBuildEvent for BesForwardingService {
     }
 }
 
+impl BesBackendBuilder {
+    fn new(endpoint: String) -> Result<Self> {
+        Ok(Self {
+            name: None,
+            endpoint: Self::parse_endpoint(endpoint)?,
+            remote_headers: MetadataMap::new(),
+            r#async: false,
+            tls_client_identity: None,
+        })
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name.replace(name.into());
+        self
+    }
+
+    pub fn remote_headers(mut self, remote_headers: MetadataMap) -> Self {
+        self.remote_headers = remote_headers;
+        self
+    }
+
+    pub fn r#async(mut self, r#async: bool) -> Self {
+        self.r#async = r#async;
+        self
+    }
+
+    pub fn tls_client_identity(mut self, certificate: PathBuf, key: PathBuf) -> Self {
+        self.tls_client_identity.replace(TlsClientKeyPair {
+            certificate,
+            private_key: key,
+        });
+        self
+    }
+
+    pub fn build(self) -> BesBackend {
+        let name = self.name.unwrap_or_else(|| {
+            rand::rng()
+                .sample_iter(&Alphabetic)
+                .take(8)
+                .map(char::from)
+                .map(|c| c.to_ascii_lowercase())
+                .collect::<String>()
+        });
+        BesBackend {
+            name,
+            endpoint: self.endpoint,
+            remote_headers: self.remote_headers,
+            r#async: self.r#async,
+            client: None,
+            uds_tls_uri: None,
+            tls_client_identity: None,
+        }
+    }
+
+    fn parse_endpoint(mut endpoint: String) -> Result<Url> {
+        // A missing scheme is not a valid Url, so prepend the
+        // default before parsing
+        if !endpoint.contains("://") && !endpoint.contains("unix:/") {
+            endpoint.insert_str(0, "grpcs://");
+        }
+
+        Ok(endpoint
+            .parse()
+            .map_err(|_| anyhow::anyhow!("failed to parse backend endpoint {endpoint}"))
+            .and_then(|mut url: Url| {
+                if !["grpc", "grpcs", "unix"].contains(&url.scheme()) {
+                    anyhow::bail!("backend endpoint {endpoint} has invalid scheme");
+                }
+                if url.scheme() != "unix" {
+                    if url.host().is_none() {
+                        anyhow::bail!("backend endpoint {endpoint} is missing host");
+                    }
+                    if url.port().is_none() {
+                        url.set_port(if url.scheme() == "grpcs" {
+                            Some(443)
+                        } else {
+                            Some(80)
+                        })
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "failed to set default port on bes backend url {endpoint}"
+                            )
+                        })?;
+                    }
+                }
+
+                Ok(url)
+            })?)
+    }
+}
+
 fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>) {
     for header in metadata.iter() {
         match header {
@@ -630,5 +721,103 @@ fn copy_request_metadata<T>(metadata: &MetadataMap, to_request: &mut Request<T>)
                 to_request.metadata_mut().append_bin(key, value.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bes_backend_url_endpoint() {
+        let result = BesBackend::builder("grpc://127.0.0.1:3000");
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_bes_backend_url_endpoint_defaults_scheme_to_grpcs_and_port_443() {
+        let result = BesBackend::builder("127.0.0.1");
+
+        assert!(result.is_ok());
+        let backend = result.unwrap().build();
+        assert_eq!("grpcs", backend.endpoint.scheme());
+        assert_eq!(443, backend.endpoint.port().unwrap());
+    }
+
+    #[test]
+    fn test_bes_backend_url_endpoint_defaults_port_for_grpc() {
+        let result = BesBackend::builder("grpc://127.0.0.1");
+
+        assert!(result.is_ok());
+        let backend = result.unwrap().build();
+        assert_eq!(80, backend.endpoint.port().unwrap());
+    }
+
+    #[test]
+    fn test_bes_backend_url_endpoint_defaults_port_for_grpcs() {
+        let result = BesBackend::builder("grpcs://127.0.0.1");
+
+        assert!(result.is_ok());
+        let backend = result.unwrap().build();
+        assert_eq!(443, backend.endpoint.port().unwrap());
+    }
+
+    #[test]
+    fn test_bes_backend_url_endpoint_invalid_scheme() {
+        let result = BesBackend::builder("http://127.0.0.1");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bes_backend_invalid_endpoint() {
+        let result = BesBackend::builder("foobar::21q34");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bes_backend_unix_domain_socket() {
+        let result = BesBackend::builder("unix:/tmp/foobar");
+
+        assert!(result.is_ok());
+        let backend = result.unwrap().build();
+        assert_eq!("unix", backend.endpoint.scheme());
+        let result = backend.endpoint.to_file_path();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert_eq!("/tmp/foobar", path.to_string_lossy());
+    }
+
+    #[test]
+    fn test_bes_backend_unix_domain_socket_missing_scheme() {
+        let result = BesBackend::builder("/tmp/foobar");
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bes_backend_no_name_generates_random_name() {
+        let b1 = BesBackend::builder("grpcs://127.0.0.1:3000")
+            .unwrap()
+            .build();
+        let b2 = BesBackend::builder("grpcs://127.0.0.1:3000")
+            .unwrap()
+            .build();
+
+        assert!(b1.name.len() == 8);
+        assert!(b2.name.len() == 8);
+        assert_ne!(b1.name, b2.name);
+    }
+
+    #[test]
+    fn test_bes_backend_uses_provided_name() {
+        let backend = BesBackend::builder("grpcs://127.0.0.1:3000")
+            .unwrap()
+            .name("foobar")
+            .build();
+
+        assert_eq!("foobar", backend.name);
     }
 }

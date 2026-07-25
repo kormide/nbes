@@ -1,19 +1,16 @@
-use clap::{Args as ClapArgs, Error, Parser, error::ErrorKind};
-use log::error;
+use anyhow::Result;
+use clap::Parser;
 use nbes::forwarding::BesBackend;
-use rand::{RngExt, distr::Alphabetic};
 use std::{
-    collections::HashMap,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    collections::{HashMap, HashSet},
     path::PathBuf,
     str::FromStr,
 };
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
-use url::Url;
 
 /// A BES backend that forwards to other BES backends
-#[derive(Debug, Parser)]
-#[command(version, about = "A BES backend that forwards to other BES backends", long_about = None)]
+#[derive(Default, Debug, Parser)]
+#[command(version, name = "nbes", about = "A BES backend that forwards to other BES backends", long_about = None)]
 pub struct Args {
     /// A BES backend to forward events to. In the simplest form, this
     /// can be a grpc endpoint. E.g.,
@@ -32,88 +29,87 @@ pub struct Args {
     ///
     ///   name=[NAME]
     ///
-    ///   Human-readable identifier for the bes backend, displayed in logs
+    ///     Human-readable identifier for the bes backend, displayed in logs
     ///
     ///   endpoint=[SCHEME://]HOST[:PORT]
     ///
-    ///   Endpoint of the BES backend
+    ///     Endpoint of the BES backend
     ///
     ///   remote_header=[NAME]=[VALUE]
     ///
-    ///   Remote headers (can repeat to add multiple)
+    ///     Remote headers (can repeat to add multiple)
     ///
     ///   async=[true|false]
     ///
-    ///   Handle responses asynchronously instead of blocking on them to send back
-    ///   to the client. If the stream fails the client won't be notified. Defaults
-    ///   to blocking behaviour (async=false).
+    ///     Handle responses asynchronously instead of blocking on them to send back
+    ///     to the client. If the stream fails the client won't be notified. Defaults
+    ///     to blocking behaviour (async=false).
     ///
     ///   tls_client_certificate=[PATH]
     ///
-    ///   File path to a TLS PEM certificate used to identify the client to the backend.
-    ///   Use this when the backend requires mTLS authentication.
+    ///     File path to a TLS PEM certificate used to identify the client to the backend.
+    ///     Use this when the backend requires mTLS authentication.
     ///
     ///   tls_client_key
     ///
-    ///   File path to a TLS PEM private key used to identify the client to the backend.
-    ///   Use this when the backend requires mTLS authentication.
-    #[arg(long = "bes_backend")]
+    ///     File path to a TLS PEM private key used to identify the client to the backend.
+    ///     Use this when the backend requires mTLS authentication.
+    #[arg(short, long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
     /// Socket address for the server to listen on. Defaults to 0.0.0.0:9000.
-    #[arg(short, long, default_value_t = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000)))]
-    pub listen: SocketAddr,
+    /// Alternatively, a unix domain socket, e.g., unix:/path/to/socket
+    #[arg(short, long)]
+    pub listen: Option<String>,
 
-    /// Unix domain socket for the server to listen on. Can be used instead of --listen.
-    /// E.g. --socket unix:/path/to/socket
-    #[arg(short, long, conflicts_with = "listen", value_parser = socket_parser)]
-    pub socket: Option<PathBuf>,
+    /// File path to the server PEM private key for TLS.
+    #[arg(long, requires = "server_tls_key")]
+    pub server_tls_certificate: Option<PathBuf>,
 
-    #[command(flatten)]
-    pub server_tls_config: ServerTlsArgs,
+    /// File path to the server PEM certificate for TLS.
+    #[arg(long, requires = "server_tls_certificate")]
+    pub server_tls_key: Option<PathBuf>,
 
     /// File path to a TLS PEM certificate that is trusted to sign server certificates.
     /// Can be repeated for multiple certificates.
     #[arg(long)]
     pub tls_certificate: Vec<PathBuf>,
+
+    /// Path to configuration file
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 }
 
-#[derive(ClapArgs, Debug)]
-pub struct ServerTlsArgs {
-    /// File path to the server PEM private key for TLS.
-    #[arg(long, requires = "server_tls_private_key")]
-    pub server_tls_certificate: Option<PathBuf>,
-    /// File path to the server PEM certificate for TLS.
-    #[arg(long, requires = "server_tls_certificate")]
-    pub server_tls_private_key: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct BesBackendArg {
-    name: String,
-    endpoint: Url,
+    name: Option<String>,
+    endpoint: String,
     remote_headers: MetadataMap,
-    asynchronous: bool,
+    r#async: bool,
     tls_client_certificate: Option<PathBuf>,
     tls_client_key: Option<PathBuf>,
 }
 
-fn socket_parser(socket: &str) -> std::result::Result<PathBuf, String> {
-    let url = Url::parse(socket).map_err(|e| format!("{e}"))?;
-    if url.scheme() != "unix" {
-        return Err(String::from(
-            "socket has incorrect url scheme; expected to start with unix:/",
-        ));
-    }
-    let path = url
-        .to_file_path()
-        .map_err(|_| String::from("socket is not a valid file path"))?;
+impl Args {
+    pub fn validate(&self) -> Result<()> {
+        // Unique bes backend names
+        let mut backend_names: HashSet<&str> = HashSet::new();
+        for backend in &self.bes_backends {
+            if let Some(name) = backend.name.as_ref() {
+                if !backend_names.contains(name.as_str()) {
+                    backend_names.insert(name.as_str());
+                } else {
+                    anyhow::bail!("multiple bes backends have the same name {}", name);
+                }
+            }
+        }
 
-    Ok(path)
+        Ok(())
+    }
 }
 
 impl FromStr for BesBackendArg {
-    type Err = clap::Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let args: Vec<&str> = s.split(",").collect();
@@ -126,18 +122,18 @@ impl FromStr for BesBackendArg {
                         arg_map.entry(k).or_insert_with(Vec::new).push(v);
                         Ok(arg_map)
                     }
-                    None => Err(Error::new(ErrorKind::InvalidValue)),
+                    None => anyhow::bail!("invalid endpoint"),
                 }
             })?;
         };
 
-        let mut endpoint = if arg_map.len() > 0 {
+        let endpoint = if arg_map.len() > 0 {
             arg_map
                 .remove("endpoint")
-                .ok_or_else(|| Error::new(ErrorKind::MissingRequiredArgument))
+                .ok_or_else(|| anyhow::anyhow!("missing endpoint"))
                 .and_then(|mut endpoints| {
                     if endpoints.len() != 1 {
-                        Err(Error::new(ErrorKind::MissingRequiredArgument))
+                        Err(anyhow::anyhow!("multiple endpoints"))
                     } else {
                         Ok(endpoints.remove(0))
                     }
@@ -147,49 +143,14 @@ impl FromStr for BesBackendArg {
         }
         .to_string();
 
-        // A missing scheme is not a valid Url, so prepend the
-        // default before parsing
-        if !endpoint.contains("://") && !endpoint.contains("unix:/") {
-            endpoint.insert_str(0, "grpcs://");
-        }
-
-        let endpoint = endpoint
-            .parse()
-            .map_err(|_| Error::new(ErrorKind::InvalidValue))
-            .and_then(|mut url: Url| {
-                if !["grpc", "grpcs", "http", "https", "unix"].contains(&url.scheme()) {
-                    return Err(Error::new(ErrorKind::InvalidValue));
-                }
-                if url.scheme() != "unix" {
-                    if url.host().is_none() {
-                        return Err(Error::new(ErrorKind::InvalidValue));
-                    }
-                    if url.port().is_none() {
-                        url.set_port(Some(443))
-                            .map_err(|_| Error::new(ErrorKind::InvalidValue))?;
-                    }
-                }
-
-                Ok(url)
-            })?;
-
-        let mut names = arg_map
+        let mut names: Vec<String> = arg_map
             .remove("name")
             .map(|names| names.into_iter().map(String::from).collect())
-            .unwrap_or_else(|| {
-                vec![
-                    rand::rng()
-                        .sample_iter(&Alphabetic)
-                        .take(8)
-                        .map(char::from)
-                        .map(|c| c.to_ascii_lowercase())
-                        .collect::<String>(),
-                ]
-            });
-        if names.len() != 1 {
-            return Err(Error::new(ErrorKind::InvalidValue));
+            .unwrap_or_default();
+        if names.len() > 1 {
+            return Err(anyhow::anyhow!("multiple names"));
         }
-        let name = names.remove(0);
+        let name = names.pop();
 
         let remote_headers = arg_map
             .remove("remote_header")
@@ -197,18 +158,20 @@ impl FromStr for BesBackendArg {
             .iter()
             .map(|header| match header.split_once("=") {
                 Some((k, v)) => Ok((k.to_string(), v.to_string())),
-                None => Err(Error::new(ErrorKind::InvalidValue)),
+                None => Err(anyhow::anyhow!("invalid remote header {header}")),
             })
             .try_fold(MetadataMap::new(), |mut metadata, kv| {
                 let (k, v) = kv?;
                 metadata.append(
-                    MetadataKey::from_str(&k).map_err(|_| Error::new(ErrorKind::InvalidValue))?,
-                    MetadataValue::from_str(&v).map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                    MetadataKey::from_str(&k)
+                        .map_err(|_| anyhow::anyhow!("invalid remote header key {k}"))?,
+                    MetadataValue::from_str(&v)
+                        .map_err(|_| anyhow::anyhow!("invalid remote header value {v}"))?,
                 );
-                Ok::<MetadataMap, Error>(metadata)
+                Ok::<MetadataMap, anyhow::Error>(metadata)
             })?;
 
-        let asynchronous: bool = arg_map
+        let r#async: bool = arg_map
             .remove("async")
             .or(Some(Vec::new()))
             .and_then(|values| {
@@ -220,11 +183,11 @@ impl FromStr for BesBackendArg {
                     Some("false")
                 }
             })
-            .ok_or_else(|| Error::new(ErrorKind::InvalidValue))
-            .and_then(|asynchronous| {
-                asynchronous
+            .ok_or_else(|| anyhow::anyhow!("multiple values for async"))
+            .and_then(|r#async| {
+                r#async
                     .parse()
-                    .map_err(|_| Error::new(ErrorKind::InvalidValue))
+                    .map_err(|_| anyhow::anyhow!("invalid async value"))
             })?;
 
         let tls_client_certificate =
@@ -233,11 +196,9 @@ impl FromStr for BesBackendArg {
                     0 => None,
                     1 => Some(
                         PathBuf::from_str(tls_client_certificate.pop().unwrap())
-                            .map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                            .map_err(|_| anyhow::anyhow!("invalid tls client certificate path"))?,
                     ),
-                    _ => {
-                        return Err(Error::new(ErrorKind::InvalidValue));
-                    }
+                    _ => anyhow::bail!("multiple tls client certificates"),
                 }
             } else {
                 None
@@ -248,153 +209,65 @@ impl FromStr for BesBackendArg {
                 0 => None,
                 1 => Some(
                     PathBuf::from_str(tls_client_key.pop().unwrap())
-                        .map_err(|_| Error::new(ErrorKind::InvalidValue))?,
+                        .map_err(|_| anyhow::anyhow!("invalid tls client key path"))?,
                 ),
-                _ => {
-                    return Err(Error::new(ErrorKind::InvalidValue));
-                }
+                _ => anyhow::bail!("multiple tls client keys"),
             }
         } else {
             None
         };
 
-        if tls_client_certificate.is_some() && tls_client_key.is_none() {
-            error!(
-                "tls_client_key is required when tls_client_certificate is specified for a backend"
-            );
-            return Err(Error::new(ErrorKind::InvalidValue));
-        }
-        if tls_client_key.is_some() && tls_client_certificate.is_none() {
-            error!(
-                "tls_client_certificate is required when tls_client_key is specified for a backend"
-            );
-            return Err(Error::new(ErrorKind::InvalidValue));
-        }
-
         Ok(BesBackendArg {
             name,
             endpoint,
             remote_headers,
-            asynchronous,
+            r#async,
             tls_client_certificate,
             tls_client_key,
         })
     }
 }
 
-impl Into<BesBackend> for BesBackendArg {
-    fn into(self) -> BesBackend {
-        let mut backend = BesBackend::new(self.name, self.endpoint, self.remote_headers);
+impl TryInto<BesBackend> for BesBackendArg {
+    type Error = anyhow::Error;
 
-        if self.asynchronous {
-            backend.set_async(true);
+    fn try_into(self) -> Result<BesBackend> {
+        let mut backend = BesBackend::builder(self.endpoint)?
+            .remote_headers(self.remote_headers)
+            .r#async(self.r#async);
+
+        if let Some(name) = self.name {
+            backend = backend.name(name)
         }
 
-        if let (Some(certificate), Some(private_key)) =
-            (self.tls_client_certificate, self.tls_client_key)
-        {
-            backend.set_client_tls_identity(certificate, private_key);
+        if let (Some(certificate), Some(key)) = (self.tls_client_certificate, self.tls_client_key) {
+            backend = backend.tls_client_identity(certificate, key);
         }
 
-        backend
+        Ok(backend.build())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use url::Url;
-
-    use crate::args::BesBackendArg;
+    use super::*;
 
     #[test]
     fn parse_bes_backend_arg_as_endpoint() {
         let result = "grpc://127.0.0.1:6000".parse::<BesBackendArg>();
 
         assert!(result.is_ok());
-        assert_eq!(
-            Url::parse("grpc://127.0.0.1:6000").unwrap(),
-            result.unwrap().endpoint,
-        );
+        let backend = result.unwrap();
+        assert_eq!("grpc://127.0.0.1:6000", backend.endpoint,);
     }
 
     #[test]
-    fn parse_bes_backend_arg_as_endpoint_generates_name() {
-        let result = "grpc://127.0.0.1:6000".parse::<BesBackendArg>();
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().name.len(), 8);
-    }
-
-    #[test]
-    fn parse_bes_backend() {
+    fn parse_bes_backend_with_properties() {
         let result = "name=foobar,endpoint=grpc://127.0.0.1:6000".parse::<BesBackendArg>();
 
         assert!(result.is_ok());
         let backend = result.unwrap();
-        assert_eq!(
-            Url::parse("grpc://127.0.0.1:6000").unwrap(),
-            backend.endpoint,
-        );
-        assert_eq!("foobar", backend.name);
-    }
-
-    #[test]
-    fn parse_bes_backend_generates_name() {
-        let result = "endpoint=grpc://127.0.0.1:6000".parse::<BesBackendArg>();
-
-        assert!(result.is_ok());
-        let backend = result.unwrap();
-        assert_eq!(8, backend.name.len(),);
-    }
-
-    #[test]
-    fn parse_bes_backend_arg_generated_name_is_random() {
-        let b1 = "endpoint=grpc://127.0.0.1:6000"
-            .parse::<BesBackendArg>()
-            .unwrap();
-        let b2 = "endpoint=grpc://127.0.0.1:6001"
-            .parse::<BesBackendArg>()
-            .unwrap();
-
-        assert!(b1.name != b2.name);
-    }
-
-    #[test]
-    fn parse_bes_backend_endpoint_invalid_scheme() {
-        let result = "foo://127.0.0.1:6000".parse::<BesBackendArg>();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_bes_backend_endpoint_defaults_scheme() {
-        let result = "127.0.0.1:6000".parse::<BesBackendArg>();
-
-        assert!(result.is_ok());
-        assert_eq!("grpcs", result.unwrap().endpoint.scheme());
-    }
-
-    #[test]
-    fn parse_bes_backend_endpoint_defaults_port() {
-        let result = "grpc://127.0.0.1".parse::<BesBackendArg>();
-
-        assert!(result.is_ok());
-        assert_eq!(443, result.unwrap().endpoint.port().unwrap());
-    }
-
-    #[test]
-    fn parse_bes_backend_missing_host_fails() {
-        let result = "grpc://".parse::<BesBackendArg>();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_bes_backend_unix_domain_socket() {
-        let result = "unix:/tmp/socket".parse::<BesBackendArg>();
-
-        assert!(result.is_ok());
-        assert_eq!("unix", result.unwrap().endpoint.scheme());
+        assert_eq!("grpc://127.0.0.1:6000", backend.endpoint);
     }
 
     #[test]
@@ -403,6 +276,15 @@ mod tests {
             .parse::<BesBackendArg>();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_bes_backend_no_name() {
+        let result = "endpoint=grpc://127.0.0.1:6000".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let backend = result.unwrap();
+        assert!(backend.name.is_none());
     }
 
     #[test]
@@ -437,33 +319,72 @@ mod tests {
     }
 
     #[test]
-    fn parse_bes_backend_client_tls() {
+    fn parse_bes_backend_async() {
+        let result = "endpoint=grpc://127.0.0.1:3000,async=true".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let backend = result.unwrap();
+        assert!(backend.r#async);
+    }
+
+    #[test]
+    fn parse_bes_backend_tls_client_certificate() {
         let result =
-            "endpoint=grpc://127.0.0.1:3000,tls_client_certificate=/cert,tls_client_key=/key"
-                .parse::<BesBackendArg>();
+            "endpoint=grpc://127.0.0.1:3000,tls_client_certificate=/cert".parse::<BesBackendArg>();
 
         assert!(result.is_ok());
         let arg = result.unwrap();
         let cert = arg.tls_client_certificate;
         assert!(cert.is_some());
         assert_eq!("/cert", cert.unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn parse_bes_backend_tls_client_key() {
+        let result = "endpoint=grpc://127.0.0.1:3000,tls_client_key=/key".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let arg = result.unwrap();
         let key = arg.tls_client_key;
         assert!(key.is_some());
         assert_eq!("/key", key.unwrap().to_string_lossy());
     }
 
     #[test]
-    fn parse_bes_backend_client_tls_missing_key() {
-        let result =
-            "endpoint=grpc://127.0.0.1:3000,tls_client_certificate=/cert".parse::<BesBackendArg>();
+    fn validate_duplicate_bes_backend_names() {
+        let args = Args {
+            bes_backends: vec![
+                BesBackendArg {
+                    name: Some("foobar".to_string()),
+                    ..Default::default()
+                },
+                BesBackendArg {
+                    name: Some("foobar".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
 
-        assert!(result.is_err());
+        assert!(args.validate().is_err());
     }
 
     #[test]
-    fn parse_bes_backend_client_tls_missing_cert() {
-        let result = "endpoint=grpc://127.0.0.1:3000,tls_client_key=/key".parse::<BesBackendArg>();
+    fn validate_different_bes_backend_names() {
+        let args = Args {
+            bes_backends: vec![
+                BesBackendArg {
+                    name: Some("foobar".to_string()),
+                    ..Default::default()
+                },
+                BesBackendArg {
+                    name: Some("moocow".to_string()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
 
-        assert!(result.is_err());
+        assert!(args.validate().is_ok());
     }
 }
