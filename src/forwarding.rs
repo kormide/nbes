@@ -17,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     str::FromStr,
+    time::Duration,
 };
 use tokio::{
     net::UnixStream,
@@ -46,6 +47,8 @@ pub struct BesBackend {
     client: Option<PublishBuildEventClient<Channel>>,
     uds_tls_uri: Option<Url>,
     tls_client_identity: Option<TlsClientKeyPair>,
+    connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
 }
 
 struct TlsClientKeyPair {
@@ -63,6 +66,8 @@ pub struct BesBackendBuilder {
     remote_headers: MetadataMap,
     r#async: bool,
     tls_client_identity: Option<TlsClientKeyPair>,
+    connect_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
 }
 
 impl BesBackend {
@@ -128,9 +133,16 @@ impl BesBackend {
             channel = channel.tls_config(client_tls)?;
         }
 
+        if let Some(timeout) = self.connect_timeout {
+            channel = channel.connect_timeout(timeout);
+        }
+
+        if let Some(timeout) = self.request_timeout {
+            channel = channel.timeout(timeout);
+        }
+
         // TODO: properties to potentially configure
         // let channel = channel
-        // .connect_timeout(Duration::from_secs(10))
         // .tcp_keepalive(tcp_keepalive)
         // .tcp_keepalive_interval(tcp_keepalive_interval)
         // .tcp_keepalive_retries(tcp_keepalive_retries)
@@ -626,6 +638,8 @@ impl BesBackendBuilder {
             remote_headers: MetadataMap::new(),
             r#async: false,
             tls_client_identity: None,
+            connect_timeout: None,
+            request_timeout: None,
         })
     }
 
@@ -650,6 +664,16 @@ impl BesBackendBuilder {
         self
     }
 
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout.replace(timeout);
+        self
+    }
+
+    pub fn request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout.replace(timeout);
+        self
+    }
+
     pub fn build(self) -> BesBackend {
         let name = self.name.unwrap_or_else(|| {
             rand::rng()
@@ -667,6 +691,8 @@ impl BesBackendBuilder {
             client: None,
             uds_tls_uri: None,
             tls_client_identity: None,
+            connect_timeout: self.connect_timeout,
+            request_timeout: self.request_timeout,
         }
     }
 

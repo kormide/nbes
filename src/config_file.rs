@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -49,10 +50,10 @@ pub struct BesBackendSpec {
     pub r#async: bool,
     #[serde(default)]
     pub remote_headers: HashMap<String, String>,
-    #[serde(default)]
     pub tls_client_certificate: Option<PathBuf>,
-    #[serde(default)]
     pub tls_client_key: Option<PathBuf>,
+    pub connect_timeout: Option<u64>,
+    pub request_timeout: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -131,6 +132,15 @@ impl TryInto<RealBesBackend> for BesBackend {
                 {
                     backend = backend.tls_client_identity(tls_client_certificate, tls_client_key);
                 }
+
+                if let Some(timeout) = spec.connect_timeout {
+                    backend = backend.connect_timeout(Duration::from_secs(timeout));
+                }
+
+                if let Some(timeout) = spec.request_timeout {
+                    backend = backend.request_timeout(Duration::from_secs(timeout));
+                }
+
                 backend.build()
             }
         })
@@ -272,6 +282,8 @@ bes_backends:
     foo: bar
   tls_client_certificate: /cert
   tls_client_key: /key
+  connect_timeout: 5
+  request_timeout: 10
 "#,
         );
 
@@ -288,6 +300,8 @@ bes_backends:
         assert_eq!("bar", spec.remote_headers["foo"]);
         assert_eq!("/cert", spec.tls_client_certificate.as_ref().unwrap());
         assert_eq!("/key", spec.tls_client_key.as_ref().unwrap());
+        assert_eq!(5, spec.connect_timeout.unwrap());
+        assert_eq!(10, spec.request_timeout.unwrap());
     }
 
     #[test]

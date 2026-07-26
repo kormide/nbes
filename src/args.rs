@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     str::FromStr,
+    time::Duration,
 };
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 
@@ -54,6 +55,16 @@ pub struct Args {
     ///
     ///     File path to a TLS PEM private key used to identify the client to the backend.
     ///     Use this when the backend requires mTLS authentication.
+    ///
+    ///   connect_timeout
+    ///     
+    ///     Max duration in seconds to connect to the backend before timing out. Deafults to no
+    ///     timeout.
+    ///
+    ///   request_timeout
+    ///     
+    ///     Max duration in seconds for requests to the backend before timing out. Defaults to
+    ///     no timeout.
     #[arg(short, long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
@@ -118,6 +129,8 @@ pub struct BesBackendArg {
     r#async: bool,
     tls_client_certificate: Option<PathBuf>,
     tls_client_key: Option<PathBuf>,
+    connect_timeout: Option<u64>,
+    request_timeout: Option<u64>,
 }
 
 impl Args {
@@ -247,6 +260,32 @@ impl FromStr for BesBackendArg {
             None
         };
 
+        let connect_timeout = if let Some(mut connect_timeout) = arg_map.remove("connect_timeout") {
+            match connect_timeout.len() {
+                0 => None,
+                1 => Some(
+                    u64::from_str(connect_timeout.pop().unwrap())
+                        .map_err(|_| anyhow::anyhow!("invalid connect_timeout"))?,
+                ),
+                _ => anyhow::bail!("multiple connect timeouts"),
+            }
+        } else {
+            None
+        };
+
+        let request_timeout = if let Some(mut request_timeout) = arg_map.remove("request_timeout") {
+            match request_timeout.len() {
+                0 => None,
+                1 => Some(
+                    u64::from_str(request_timeout.pop().unwrap())
+                        .map_err(|_| anyhow::anyhow!("invalid request_timeout"))?,
+                ),
+                _ => anyhow::bail!("multiple request timeouts"),
+            }
+        } else {
+            None
+        };
+
         Ok(BesBackendArg {
             name,
             endpoint,
@@ -254,6 +293,8 @@ impl FromStr for BesBackendArg {
             r#async,
             tls_client_certificate,
             tls_client_key,
+            connect_timeout,
+            request_timeout,
         })
     }
 }
@@ -272,6 +313,14 @@ impl TryInto<BesBackend> for BesBackendArg {
 
         if let (Some(certificate), Some(key)) = (self.tls_client_certificate, self.tls_client_key) {
             backend = backend.tls_client_identity(certificate, key);
+        }
+
+        if let Some(timeout) = self.connect_timeout {
+            backend = backend.connect_timeout(Duration::from_secs(timeout));
+        }
+
+        if let Some(timeout) = self.request_timeout {
+            backend = backend.request_timeout(Duration::from_secs(timeout));
         }
 
         Ok(backend.build())
@@ -378,6 +427,28 @@ mod tests {
         let key = arg.tls_client_key;
         assert!(key.is_some());
         assert_eq!("/key", key.unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn parse_bes_backend_connect_timeout() {
+        let result = "endpoint=grpc://127.0.0.1:3000,connect_timeout=15".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let arg = result.unwrap();
+        let connect_timeout = arg.connect_timeout;
+        assert!(connect_timeout.is_some());
+        assert_eq!(15, connect_timeout.unwrap());
+    }
+
+    #[test]
+    fn parse_bes_backend_request_timeout() {
+        let result = "endpoint=grpc://127.0.0.1:3000,request_timeout=10".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let arg = result.unwrap();
+        let request_timeout = arg.request_timeout;
+        assert!(request_timeout.is_some());
+        assert_eq!(10, request_timeout.unwrap());
     }
 
     #[test]
