@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use build_proto::google::devtools::build::v1::publish_build_event_server::{
     PublishBuildEvent, PublishBuildEventServer,
 };
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig, server::Router};
@@ -55,11 +55,6 @@ impl GrpcBesServer {
 }
 
 impl GrpcBesServerConfig {
-    // TODO: properties to potentially configure
-    // .concurrency_limit_per_connection(100)
-    // .load_shed(true)
-    // .max_concurrent_streams(Some(1000))
-
     pub fn tls_config(
         mut self,
         certificate_path: impl AsRef<Path>,
@@ -69,8 +64,7 @@ impl GrpcBesServerConfig {
     ) -> Result<Self> {
         let certificate =
             fs::read_to_string(certificate_path).context("failed to read tls certificate")?;
-        let key =
-            fs::read_to_string(key_path).context("failed to read tls private key")?;
+        let key = fs::read_to_string(key_path).context("failed to read tls private key")?;
         let mut tls_config = ServerTlsConfig::new()
             .identity(Identity::from_pem(certificate, key))
             .client_auth_optional(require_client_auth);
@@ -85,6 +79,31 @@ impl GrpcBesServerConfig {
             .tls_config(tls_config)
             .context("failed to configure server tls")?;
         Ok(self)
+    }
+
+    pub fn concurrency_limit_per_connection(mut self, limit: usize) -> Self {
+        self.server = self.server.concurrency_limit_per_connection(limit);
+        self
+    }
+
+    pub fn load_shed_requests(mut self, load_shed: bool) -> Self {
+        self.server = self.server.load_shed(load_shed);
+        self
+    }
+
+    pub fn max_concurrent_streams(mut self, limit: u32) -> Self {
+        self.server = self.server.max_concurrent_streams(limit);
+        self
+    }
+
+    pub fn max_connection_age(mut self, duration: Duration) -> Self {
+        self.server = self.server.max_connection_age(duration);
+        self
+    }
+
+    pub fn max_connection_age_grace(mut self, duration: Duration) -> Self {
+        self.server = self.server.max_connection_age_grace(duration);
+        self
     }
 
     pub fn bes_service(mut self, service: impl PublishBuildEvent) -> GrpcBesServer {

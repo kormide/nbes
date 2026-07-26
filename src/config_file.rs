@@ -26,6 +26,12 @@ pub struct Server {
     pub listen: Option<String>,
     #[serde(default)]
     pub tls: ServerTls,
+    pub concurrency_limit_per_connection: Option<usize>,
+    #[serde(default)]
+    pub load_shed_requests: bool,
+    pub max_concurrent_streams: Option<u32>,
+    pub max_connection_age: Option<u64>,
+    pub max_connection_age_grace: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +150,11 @@ mod tests {
         assert!(config.server.listen.is_none());
         assert!(config.server.tls.certificate.is_none());
         assert!(config.server.tls.key.is_none());
+        assert!(config.server.concurrency_limit_per_connection.is_none());
+        assert_eq!(false, config.server.load_shed_requests);
+        assert!(config.server.max_concurrent_streams.is_none());
+        assert!(config.server.max_connection_age.is_none());
+        assert!(config.server.max_connection_age_grace.is_none());
         assert!(config.bes_backends.is_empty());
         assert!(config.tls_certificates.is_empty());
     }

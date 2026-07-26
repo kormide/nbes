@@ -3,7 +3,7 @@ use args::Args;
 use clap::Parser;
 use log::{LevelFilter, info, warn};
 use nbes::{Config, ServerTlsConfig, forwarding::BesBackend};
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 use tokio::signal;
 
 use crate::config_file::ConfigFile;
@@ -92,6 +92,21 @@ fn build_config(args: Args) -> Result<Config> {
             .into_iter()
             .chain(config_file.tls_certificates.into_iter())
             .collect(),
+        concurrency_limit_per_connection: args
+            .concurrency_limit_per_connection
+            .or(config_file.server.concurrency_limit_per_connection),
+        load_shed_requests: args.load_shed_requests || config_file.server.load_shed_requests,
+        max_concurrent_streams: args
+            .max_concurrent_streams
+            .or(config_file.server.max_concurrent_streams),
+        max_connection_age: args
+            .max_connection_age
+            .or(config_file.server.max_connection_age)
+            .map(Duration::from_secs),
+        max_connection_age_grace: args
+            .max_connection_age_grace
+            .or(config_file.server.max_connection_age_grace)
+            .map(Duration::from_secs),
     };
 
     Ok(config)

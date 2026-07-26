@@ -5,6 +5,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::PathBuf,
     str::FromStr,
+    time::Duration,
 };
 use url::Url;
 
@@ -22,6 +23,11 @@ pub struct Config {
     pub listen: Binding,
     pub server_tls_config: Option<ServerTlsConfig>,
     pub tls_certificates: Vec<PathBuf>,
+    pub concurrency_limit_per_connection: Option<usize>,
+    pub load_shed_requests: bool,
+    pub max_concurrent_streams: Option<u32>,
+    pub max_connection_age: Option<Duration>,
+    pub max_connection_age_grace: Option<Duration>,
 }
 
 pub struct ServerTlsConfig {
@@ -64,6 +70,26 @@ pub async fn run(config: Config, shutdown_signal: impl Future<Output = ()>) -> R
             Vec::default(),
             false,
         )?;
+    }
+
+    if let Some(concurrency_limit_per_connection) = config.concurrency_limit_per_connection {
+        server = server.concurrency_limit_per_connection(concurrency_limit_per_connection);
+    }
+
+    if config.load_shed_requests {
+        server = server.load_shed_requests(true);
+    }
+
+    if let Some(max_concurrent_streams) = config.max_concurrent_streams {
+        server = server.max_concurrent_streams(max_concurrent_streams);
+    }
+
+    if let Some(max_connection_age) = config.max_connection_age {
+        server = server.max_connection_age(max_connection_age);
+    }
+
+    if let Some(max_connection_age_grace) = config.max_connection_age_grace {
+        server = server.max_connection_age_grace(max_connection_age_grace);
     }
 
     server

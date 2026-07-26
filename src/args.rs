@@ -75,6 +75,36 @@ pub struct Args {
     #[arg(long)]
     pub tls_certificate: Vec<PathBuf>,
 
+    /// The number of concurrent inbound requests per connection. Default unset.
+    /// When used in combination with --load-shed-requests, requests will be rejected with
+    /// a resource exhausted error instead of buffering when the concurrency limit
+    /// is reached.
+    #[arg(long)]
+    pub concurrency_limit_per_connection: Option<usize>,
+
+    /// Reject requests when the concurrency limit is reached. See
+    /// --confurrency-limit_per_connection.
+    #[arg(
+        long,
+        default_value_t = false,
+        requires = "concurrency_limit_per_connection"
+    )]
+    pub load_shed_requests: bool,
+
+    /// Limit concurrent HTTP/2 streams per connection.
+    /// Sets SETTINGS_MAX_CONCURRENT_STREAMS.
+    #[arg(long)]
+    pub max_concurrent_streams: Option<u32>,
+
+    /// The maximum duration in seconds that a connection may exist.
+    #[arg(long)]
+    pub max_connection_age: Option<u64>,
+
+    /// The maximum duration in seconds that a connection may continue to exist after a graceful shutdown
+    /// period. This takes effect after the duration in --max-connection-age.
+    #[arg(long)]
+    pub max_connection_age_grace: Option<u64>,
+
     /// Path to configuration file
     #[arg(short, long)]
     pub config: Option<PathBuf>,

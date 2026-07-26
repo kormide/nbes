@@ -129,6 +129,7 @@ pub async fn forwards_to_tls_backend() -> Result<()> {
             key: key.path().to_path_buf(),
         }),
         tls_certificates: vec![b1_certificate.path().to_path_buf()],
+        ..Default::default()
     };
 
     let shutdown_nbes = spawn_nbes(config).await;
