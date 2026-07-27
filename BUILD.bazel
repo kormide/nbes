@@ -200,5 +200,5 @@ PLATFORMS = [
 filegroup(
     name = "for_all_platforms",
     srcs = [":for_{}".format(p.split(":")[1]) for p in PLATFORMS],
-    tags = ["manual"]
+    tags = ["manual"],
 )
