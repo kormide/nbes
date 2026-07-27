@@ -24,6 +24,7 @@ common:release -c opt
 common:release --strip=always
 common:release --stripopt=--strip-all
 common:release --stamp
+common:release --workspace_status_command "${PWD}/workspace_status.sh"
 
 ########################
 # User preferences

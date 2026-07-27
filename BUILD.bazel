@@ -1,3 +1,4 @@
+load("@bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@buildifier_prebuilt//:rules.bzl", "buildifier")
 load(
@@ -44,6 +45,15 @@ rust_test(
     crate = ":lib",
 )
 
+expand_template(
+    name = "rustc_env_file",
+    out = "rustc_env_file.env",
+    stamp_substitutions = {"0.0.0": "{{STABLE_NBES_VERSION}}"},
+    template = [
+        "CARGO_PKG_VERSION=0.0.0",
+    ],
+)
+
 rust_binary(
     name = "bin",
     srcs = [
@@ -52,7 +62,7 @@ rust_binary(
         "src/main.rs",
     ],
     binary_name = "nbes",
-    version = "0.0.0",  # TODO: stamp
+    rustc_env_files = [":rustc_env_file"],
     deps = [
         ":lib",
         "@crates//:anyhow",
