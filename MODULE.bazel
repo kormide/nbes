@@ -1,5 +1,6 @@
 bazel_dep(name = "aws-lc", version = "5.1.0")
 bazel_dep(name = "bazel_lib", version = "3.5.0")
+bazel_dep(name = "bazelrc-preset.bzl", version = "1.9.2")
 bazel_dep(name = "diff.bzl", version = "0.5.5")
 bazel_dep(name = "googleapis", version = "0.0.0-20260402-c8ca5bce", repo_name = "com_google_googleapis")
 bazel_dep(name = "llvm", version = "0.8.14")
