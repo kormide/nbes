@@ -54,6 +54,7 @@ pub struct BesBackendSpec {
     pub tls_client_key: Option<PathBuf>,
     pub connect_timeout: Option<u64>,
     pub request_timeout: Option<u64>,
+    pub request_buffer_size: Option<usize>,
 }
 
 #[derive(Default, Deserialize)]
@@ -139,6 +140,10 @@ impl TryInto<RealBesBackend> for BesBackend {
 
                 if let Some(timeout) = spec.request_timeout {
                     backend = backend.request_timeout(Duration::from_secs(timeout));
+                }
+
+                if let Some(request_buffer_size) = spec.request_buffer_size {
+                    backend = backend.request_buffer_size(request_buffer_size);
                 }
 
                 backend.build()
@@ -256,6 +261,7 @@ bes_backends:
         assert!(spec.remote_headers.is_empty());
         assert!(spec.tls_client_certificate.is_none());
         assert!(spec.tls_client_certificate.is_none());
+        assert!(spec.request_buffer_size.is_none());
     }
 
     #[test]
@@ -284,6 +290,7 @@ bes_backends:
   tls_client_key: /key
   connect_timeout: 5
   request_timeout: 10
+  request_buffer_size: 1000
 "#,
         );
 
@@ -302,6 +309,7 @@ bes_backends:
         assert_eq!("/key", spec.tls_client_key.as_ref().unwrap());
         assert_eq!(5, spec.connect_timeout.unwrap());
         assert_eq!(10, spec.request_timeout.unwrap());
+        assert_eq!(1000, spec.request_buffer_size.unwrap());
     }
 
     #[test]

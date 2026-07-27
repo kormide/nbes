@@ -4,11 +4,7 @@ use build_proto::google::devtools::build::v1::{
     PublishLifecycleEventRequest, StreamId, publish_build_event_client::PublishBuildEventClient,
     publish_build_event_server::PublishBuildEvent,
 };
-use futures::{
-    Stream,
-    future::join_all,
-    stream::{StreamExt, unfold},
-};
+use futures::{Stream, future::join_all, stream::unfold};
 use hyper_util::rt::TokioIo;
 use log::{error, info};
 use rand::{RngExt, distr::Alphabetic};
@@ -22,11 +18,11 @@ use std::{
 use tokio::{
     net::UnixStream,
     sync::{
-        broadcast::{self},
+        mpsc::{self},
         watch::{self},
     },
 };
-use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{KeyAndValueRef, MetadataMap},
@@ -49,6 +45,7 @@ pub struct BesBackend {
     tls_client_identity: Option<TlsClientKeyPair>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
+    request_buffer_size: usize,
 }
 
 struct TlsClientKeyPair {
@@ -68,6 +65,7 @@ pub struct BesBackendBuilder {
     tls_client_identity: Option<TlsClientKeyPair>,
     connect_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
+    request_buffer_size: usize,
 }
 
 impl BesBackend {
@@ -283,17 +281,17 @@ impl PublishBuildEvent for BesForwardingService {
 
         let (metadata, _, mut incoming_request_stream) = request.into_parts();
 
-        // Broadcast each incoming request to the receiver stream that feeds the outgoing request
+        // Send each incoming request to the receiver stream that feeds the outgoing request
         // stream for each backend. Sending the requests must be done asynchronously from
         // processing responses because some bes backends, e.g., Buildbuddy, will wait for
-        // all requests to be received before sending any responses.
-        let (be_request_tx, _) = broadcast::channel::<PublishBuildToolEventStreamRequest>(256);
-
-        let mut be_request_rx: Vec<_> = self
+        // all requests to be received before sending any responses. The channel buffer size
+        // adds back pressure. If we receive requests too quickly for backends to process,
+        // the buffers will be filled until one of the backends starts blocking.
+        let (be_request_txs, mut be_request_rxs): (Vec<_>, Vec<_>) = self
             .backends
             .iter()
-            .map(|_| be_request_tx.subscribe())
-            .collect();
+            .map(|b| mpsc::channel::<PublishBuildToolEventStreamRequest>(b.request_buffer_size))
+            .unzip();
 
         // Watch channel that contains the latest status of the request stream. This is an
         // optimization over buffering requests in a channel to send for response processing,
@@ -308,7 +306,6 @@ impl PublishBuildEvent for BesForwardingService {
         });
 
         tokio::spawn({
-            let has_backends = !self.backends.is_empty();
             async move {
                 let mut seq = 0;
                 let mut original_stream_id: Option<StreamId> = None;
@@ -407,12 +404,16 @@ impl PublishBuildEvent for BesForwardingService {
                                 seq = next_seq;
                             }
 
-                            if has_backends {
-                                // broadcast to all backends
-                                be_request_tx
-                                    .send(original_request.clone())
-                                    .context("failed to broadcast request to backend receivers")?;
-                            }
+                            // Send the request to all backends
+                            join_all(
+                                be_request_txs.iter().map(|be_request_tx| {
+                                    be_request_tx.send(original_request.clone())
+                                }),
+                            )
+                            .await
+                            .into_iter()
+                            .collect::<Result<Vec<()>, _>>()
+                            .context("backend receiver stream unexpectedly closed")?;
 
                             request_watch_tx
                                 .send(RequestStreamStatus {
@@ -438,22 +439,11 @@ impl PublishBuildEvent for BesForwardingService {
         // Create the response streams for each bes backend
         let mut incoming_responses: Vec<_> = Vec::new();
         for backend in &self.backends {
-            let be_request_rx = be_request_rx.pop().unwrap();
+            let be_request_rx = be_request_rxs.pop().unwrap();
             let metadata = metadata.clone();
-            let outbound_requests = BroadcastStream::new(be_request_rx).map(|request| {
-                match request {
-                    Ok(request) => request,
-                    Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                        // This shouldn't happen, but panic if it does. Panicing will kill
-                        // the tokio task handling the request, not the entire program.
-                        panic!(
-                            "error: request broadcast stream lagged and skipped {skipped} requests"
-                        );
-                    }
-                }
-            });
-
+            let outbound_requests = ReceiverStream::new(be_request_rx);
             let mut request = Request::new(outbound_requests);
+
             copy_request_metadata(&metadata, &mut request);
             copy_request_metadata(&backend.remote_headers, &mut request);
 
@@ -747,6 +737,7 @@ impl BesBackendBuilder {
             tls_client_identity: None,
             connect_timeout: None,
             request_timeout: None,
+            request_buffer_size: 500,
         })
     }
 
@@ -781,6 +772,11 @@ impl BesBackendBuilder {
         self
     }
 
+    pub fn request_buffer_size(mut self, size: usize) -> Self {
+        self.request_buffer_size = size;
+        self
+    }
+
     pub fn build(self) -> BesBackend {
         let name = self.name.unwrap_or_else(|| {
             rand::rng()
@@ -800,6 +796,7 @@ impl BesBackendBuilder {
             tls_client_identity: None,
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
+            request_buffer_size: self.request_buffer_size,
         }
     }
 

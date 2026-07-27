@@ -65,6 +65,13 @@ pub struct Args {
     ///     
     ///     Max duration in seconds for requests to the backend before timing out. Defaults to
     ///     no timeout.
+    ///
+    ///   request_buffer_size
+    ///
+    ///     The maximum number of requests that can be buffered waiting to send to this backend
+    ///     before adding backpressure on incoming requests. Increase this on slower backends
+    ///     that are bottlenecking other backends from receiving requests, at the cost of more
+    ///     memory usage. Defaults to 500.
     #[arg(short, long = "bes_backend")]
     pub bes_backends: Vec<BesBackendArg>,
 
@@ -131,6 +138,7 @@ pub struct BesBackendArg {
     tls_client_key: Option<PathBuf>,
     connect_timeout: Option<u64>,
     request_timeout: Option<u64>,
+    request_buffer_size: Option<usize>,
 }
 
 impl Args {
@@ -286,6 +294,20 @@ impl FromStr for BesBackendArg {
             None
         };
 
+        let request_buffer_size =
+            if let Some(mut request_buffer_size) = arg_map.remove("request_buffer_size") {
+                match request_buffer_size.len() {
+                    0 => None,
+                    1 => Some(
+                        usize::from_str(request_buffer_size.pop().unwrap())
+                            .map_err(|_| anyhow::anyhow!("invalid request_buffer_size"))?,
+                    ),
+                    _ => anyhow::bail!("multiple request buffer sizes"),
+                }
+            } else {
+                None
+            };
+
         Ok(BesBackendArg {
             name,
             endpoint,
@@ -295,6 +317,7 @@ impl FromStr for BesBackendArg {
             tls_client_key,
             connect_timeout,
             request_timeout,
+            request_buffer_size,
         })
     }
 }
@@ -321,6 +344,10 @@ impl TryInto<BesBackend> for BesBackendArg {
 
         if let Some(timeout) = self.request_timeout {
             backend = backend.request_timeout(Duration::from_secs(timeout));
+        }
+
+        if let Some(request_buffer_size) = self.request_buffer_size {
+            backend = backend.request_buffer_size(request_buffer_size);
         }
 
         Ok(backend.build())
@@ -449,6 +476,18 @@ mod tests {
         let request_timeout = arg.request_timeout;
         assert!(request_timeout.is_some());
         assert_eq!(10, request_timeout.unwrap());
+    }
+
+    #[test]
+    fn parse_bes_backend_request_buffer_size() {
+        let result =
+            "endpoint=grpc://127.0.0.1:3000,request_buffer_size=2000".parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let arg = result.unwrap();
+        let request_buffer_size = arg.request_buffer_size;
+        assert!(request_buffer_size.is_some());
+        assert_eq!(2000, request_buffer_size.unwrap());
     }
 
     #[test]
