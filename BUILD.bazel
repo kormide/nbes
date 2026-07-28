@@ -1,5 +1,6 @@
 load("@bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@buildifier_prebuilt//:rules.bzl", "buildifier")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
 load(
@@ -211,9 +212,19 @@ tar(
     compress = "gzip",
 )
 
+write_file(
+    name = "image_args",
+    out = "image_args.txt",
+    content = [
+        "-c",
+        "/config.yaml",
+    ],
+)
+
 oci_image(
     name = "image",
     base = "@distroless_cc",
+    cmd = ":image_args",
     entrypoint = ["/nbes"],
     tars = [":bin_layer"],
 )
