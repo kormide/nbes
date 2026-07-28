@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: bazel-contrib/setup-bazel@083175551ceeceebc757ebee2127fde78840ca77 # 0.18.0
@@ -18,12 +19,12 @@ jobs:
           disk-cache: ${{ github.workflow }}
           repository-cache: true
           bazelrc: common --config=ci --config=release
-      - name: build deliverables
-        run: |
-          bazel build //:multiplatform_bins //:image.push
       - name: push images
         run: |
           bazel run //:image.push
+      - name: build deliverables
+        run: |
+          bazel build //:multiplatform_bins //:image.push
       - name: collect-artifacts
         run: |
           mv bazel-out/linux_x86_64_gnu.2.28-opt/bin/nbes nbes-linux-amd64
