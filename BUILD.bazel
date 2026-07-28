@@ -198,7 +198,7 @@ PLATFORMS = [
 ]
 
 filegroup(
-    name = "for_all_platforms",
+    name = "multiplatform_bins",
     srcs = [":for_{}".format(p.split(":")[1]) for p in PLATFORMS],
     tags = ["manual"],
 )
