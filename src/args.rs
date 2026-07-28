@@ -81,29 +81,29 @@ pub struct Args {
     pub listen: Option<String>,
 
     /// File path to the server PEM private key for TLS.
-    #[arg(long, requires = "server_tls_key")]
+    #[arg(long = "server_tls_certificate", requires = "server_tls_key")]
     pub server_tls_certificate: Option<PathBuf>,
 
     /// File path to the server PEM certificate for TLS.
-    #[arg(long, requires = "server_tls_certificate")]
+    #[arg(long = "server_tls_key", requires = "server_tls_certificate")]
     pub server_tls_key: Option<PathBuf>,
 
     /// File path to a TLS PEM certificate that is trusted to sign server certificates.
     /// Can be repeated for multiple certificates.
-    #[arg(long)]
+    #[arg(long = "tls_certificate")]
     pub tls_certificate: Vec<PathBuf>,
 
-    /// The number of concurrent inbound requests per connection. Default unset.
-    /// When used in combination with --load-shed-requests, requests will be rejected with
+    /// the number of concurrent inbound requests per connection. default unset.
+    /// When used in combination with --load_shed_requests, requests will be rejected with
     /// a resource exhausted error instead of buffering when the concurrency limit
     /// is reached.
-    #[arg(long)]
+    #[arg(long = "concurrency_limit_per_connection")]
     pub concurrency_limit_per_connection: Option<usize>,
 
     /// Reject requests when the concurrency limit is reached. See
-    /// --confurrency-limit_per_connection.
+    /// --concurrency_limit_per_connection.
     #[arg(
-        long,
+        long = "load_shed_requests",
         default_value_t = false,
         requires = "concurrency_limit_per_connection"
     )]
@@ -111,16 +111,16 @@ pub struct Args {
 
     /// Limit concurrent HTTP/2 streams per connection.
     /// Sets SETTINGS_MAX_CONCURRENT_STREAMS.
-    #[arg(long)]
+    #[arg(long = "max_concurrent_streams")]
     pub max_concurrent_streams: Option<u32>,
 
     /// The maximum duration in seconds that a connection may exist.
-    #[arg(long)]
+    #[arg(long = "max_connection_age")]
     pub max_connection_age: Option<u64>,
 
     /// The maximum duration in seconds that a connection may continue to exist after a graceful shutdown
-    /// period. This takes effect after the duration in --max-connection-age.
-    #[arg(long)]
+    /// period. This takes effect after the duration in --max_connection_age.
+    #[arg(long = "max_connection_age_grace")]
     pub max_connection_age_grace: Option<u64>,
 
     /// Path to configuration file
