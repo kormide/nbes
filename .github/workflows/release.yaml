@@ -19,12 +19,18 @@ jobs:
           disk-cache: ${{ github.workflow }}
           repository-cache: true
           bazelrc: common --config=ci --config=release
-      - name: push images
-        run: |
-          bazel run //:image.push
+      - name: docker login
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: build deliverables
         run: |
           bazel build //:multiplatform_bins //:image.push
+      - name: push images
+        run: |
+          bazel run //:image.push
       - name: collect-artifacts
         run: |
           mv bazel-out/linux_x86_64_gnu.2.28-opt/bin/nbes nbes-linux-amd64

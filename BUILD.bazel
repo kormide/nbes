@@ -246,6 +246,6 @@ expand_template(
 oci_push(
     name = "image.push",
     image = ":image.multiarch",
-    remote_tags = [":stamped_tags"],
+    remote_tags = ":stamped_tags",
     repository = "ghcr.io/kormide/nbes",
 )
