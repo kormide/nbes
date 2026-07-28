@@ -1,6 +1,7 @@
 load("@bazel_lib//lib:expand_template.bzl", "expand_template")
 load("@bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
 load("@buildifier_prebuilt//:rules.bzl", "buildifier")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index", "oci_load", "oci_push")
 load(
     "@rules_rs//rs:rust_binary.bzl",
     "rust_binary",
@@ -13,6 +14,7 @@ load(
     "@rules_rs//rs:rust_test.bzl",
     "rust_test",
 )
+load("@tar.bzl", "tar")
 load(":integration_test.bzl", "rust_integration_test")
 
 rust_library(
@@ -201,4 +203,49 @@ filegroup(
     name = "multiplatform_bins",
     srcs = [":for_{}".format(p.split(":")[1]) for p in PLATFORMS],
     tags = ["manual"],
+)
+
+tar(
+    name = "bin_layer",
+    srcs = [":bin"],
+    compress = "gzip",
+)
+
+oci_image(
+    name = "image",
+    base = "@distroless_cc",
+    entrypoint = ["/nbes"],
+    tars = [":bin_layer"],
+)
+
+oci_load(
+    name = "image.load",
+    image = ":image",
+    repo_tags = ["nbes:latest"],
+)
+
+oci_image_index(
+    name = "image.multiarch",
+    images = [":image"],
+    platforms = [
+        "@llvm//platforms:linux_x86_64_gnu.2.28",
+        "@llvm//platforms:linux_arm64_gnu.2.28",
+    ],
+)
+
+expand_template(
+    name = "stamped_tags",
+    out = "_stamped.tags.txt",
+    stamp_substitutions = {"0.0.0": "{{STABLE_NBES_VERSION}}"},
+    template = [
+        "0.0.0",
+        "latest",
+    ],
+)
+
+oci_push(
+    name = "image.push",
+    image = ":image.multiarch",
+    remote_tags = [":stamped_tags"],
+    repository = "ghcr.io/kormide/nbes",
 )
