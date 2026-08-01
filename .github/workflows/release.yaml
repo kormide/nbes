@@ -42,4 +42,4 @@ jobs:
         with:
           fail_on_unmatched_files: true
           generate_release_notes: true
-          files: nbes-*
+          files: nbes_*
