@@ -33,10 +33,10 @@ jobs:
           bazel run //:image.push
       - name: collect-artifacts
         run: |
-          mv bazel-out/linux_x86_64_gnu.2.28-opt/bin/nbes nbes-linux-amd64
-          mv bazel-out/linux_arm64_gnu.2.28-opt/bin/nbes nbes-linux-arm64
-          mv bazel-out/macos_amd64-opt/bin/nbes nbes-darwin-amd64
-          mv bazel-out/macos_arm64-opt/bin/nbes nbes-darwin-arm64
+          mv bazel-out/aarch64-apple-darwin-opt/bin/nbes nbes_darwin_arm64
+          mv bazel-out/aarch64-unknown-linux-musl-opt/bin/nbes nbes_linux_arm64
+          mv bazel-out/x86_64-apple-darwin-opt/bin/nbes nbes_darwin_amd64
+          mv bazel-out/x86_64-unknown-linux-musl-opt/bin/nbes nbes_linux_amd64
       - name: release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
