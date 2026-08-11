@@ -254,6 +254,10 @@ impl PublishBuildEvent for BesForwardingService {
             request_stream_completed: bool,
             /// A channel used to watch the latest status of the request stream processing
             request_watch_rx: watch::Receiver<RequestStreamStatus>,
+            /// Whether we controlled the ending of a stream, either by finishing it or returning
+            /// an error. If this is false then the grpc stream unexpectedly ended, for example,
+            /// if the client sends a RST_STREAM.
+            controlled_exit: bool,
         }
 
         #[derive(Debug)]
@@ -276,6 +280,21 @@ impl PublishBuildEvent for BesForwardingService {
                     .as_ref()
                     .map(|sid| sid.invocation_id.as_str())
                     .unwrap_or("unknown")
+            }
+
+            fn mark_controlled_exit(&mut self) {
+                self.controlled_exit = true;
+            }
+        }
+
+        impl Drop for State {
+            fn drop(&mut self) {
+                if !self.controlled_exit {
+                    error!(
+                        "[invocation_id={}] build tool event stream was cancelled",
+                        self.iid()
+                    );
+                }
             }
         }
 
@@ -550,6 +569,7 @@ impl PublishBuildEvent for BesForwardingService {
             error_at_latest: None,
             request_stream_completed: false,
             request_watch_rx,
+            controlled_exit: false,
         };
 
         Ok(Response::new(Box::pin(unfold(state, |mut state| {
@@ -587,6 +607,7 @@ impl PublishBuildEvent for BesForwardingService {
                     // The request stream failed at the latest sequence and we've processed
                     // responses up to that sequence. End the response stream with the failure
                     // it returned.
+                    state.mark_controlled_exit();
                     return Some((Err(state.error_at_latest.take().unwrap()), state));
                 }
 
@@ -595,6 +616,7 @@ impl PublishBuildEvent for BesForwardingService {
                         "[invocation_id={}] completed build tool event stream",
                         state.iid()
                     );
+                    state.mark_controlled_exit();
                     return None;
                 }
 
@@ -603,7 +625,6 @@ impl PublishBuildEvent for BesForwardingService {
                     join_all(state.incoming_responses.iter_mut().map(|r| r.1.message())).await;
 
                 for (i, response) in responses.iter().enumerate() {
-                    let backend_name = &state.incoming_responses[i].0;
                     match response {
                         Ok(response) => {
                             match response {
@@ -613,30 +634,35 @@ impl PublishBuildEvent for BesForwardingService {
                                         sequence_number: response_seq,
                                     } = response
                                     else {
+                                        state.mark_controlled_exit();
                                         return Some((
                                             Err(Status::internal(format!(
-                                                "response from bes backend {backend_name} is missing stream_id",
+                                                "response from bes backend {} is missing stream_id",
+                                                state.incoming_responses[i].0
                                             ))),
                                             state,
                                         ));
                                     };
 
                                     if let Err(status) = Self::validate_build_event_ack_response(
-                                        &backend_name,
+                                        &state.incoming_responses[i].0,
                                         state.stream_id.as_ref().unwrap(),
                                         state.next_seq,
                                         response_stream_id,
                                         *response_seq,
                                     ) {
+                                        state.mark_controlled_exit();
                                         return Some((Err(status), state));
                                     }
                                 }
                                 None => {
                                     error!(
-                                        "[invocation_id={}] bes backend {backend_name} unexpectedly ended stream on sequence {}",
+                                        "[invocation_id={}] bes backend {} unexpectedly ended stream on sequence {}",
+                                        state.iid(),
+                                        state.incoming_responses[i].0,
                                         state.next_seq,
-                                        state.iid()
                                     );
+                                    state.mark_controlled_exit();
                                     // End the stream for all backends. Consider making this more fault
                                     // tolerant and continue the other streams?
                                     return None;
@@ -645,15 +671,17 @@ impl PublishBuildEvent for BesForwardingService {
                         }
                         Err(status) => {
                             error!(
-                                "[invocation_id={}] failed to receive build event from backend {backend_name}: {status}",
-                                state.iid()
+                                "[invocation_id={}] failed to receive build event from backend {}: {status}",
+                                state.iid(),
+                                state.incoming_responses[i].0,
                             );
+                            state.mark_controlled_exit();
                             return Some((
                                 Err(Status::with_details_and_metadata(
                                     status.code(),
                                     format!(
                                         "{} failed event stream request: {}",
-                                        backend_name,
+                                        state.incoming_responses[i].0,
                                         status.message()
                                     ),
                                     status.details().iter().cloned().collect(),
