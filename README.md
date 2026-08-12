@@ -162,7 +162,39 @@ The nbes service is released both as a binary under [releases](https://github.co
 <details>
   <summary><b>systemd</b></summary>
 
-  TODO
+
+Download the nbes binary from [releases](https://github.com/kormide/nbes/releases) and create a [config](#config-file) file.
+
+Copy the following unit file to `/etc/systemd/system/nbes.service` substituting in the binary and config file paths.
+
+```
+[Unit]
+Description=nbes service
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+ExecStart=/usr/local/bin/nbes -c /etc/nbes/config.yaml
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Reload the systemd daemon.
+
+```bash
+sudo systemctl daemon-reload
+```
+
+Start the nbes service.
+
+```bash
+sudo systemctl start nbes.service
+```
+
 </details>
 
 <details>
