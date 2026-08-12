@@ -68,6 +68,43 @@ pub struct BesBackendBuilder {
     request_buffer_size: usize,
 }
 
+/// Current state of a the build tool event response stream
+struct BuildToolResponseStreamState {
+    /// Response streams from the bes backends
+    incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
+    /// Identifier of the build stream
+    stream_id: Option<StreamId>,
+    /// Next request sequence to process
+    next_seq: i64,
+    /// The currently known latest sequence since requests are processed concurrently
+    latest_seq: i64,
+    /// An error a the latest known sequence, if any
+    error_at_latest: Option<Status>,
+    /// Whether the request stream has already completed
+    request_stream_completed: bool,
+    /// A channel used to watch the latest status of the request stream processing
+    request_watch_rx: watch::Receiver<BuildToolRequestStreamState>,
+    /// Whether we controlled the ending of a stream, either by finishing it or returning
+    /// an error. If this is false then the grpc stream unexpectedly ended, for example,
+    /// if the client sends a RST_STREAM.
+    controlled_exit: bool,
+}
+
+/// Current state of the build tool event request stream
+#[derive(Debug)]
+struct BuildToolRequestStreamState {
+    /// The stream id, only available after the first message is received.
+    stream_id: Option<StreamId>,
+    /// The starting sequence number of the stream
+    starting_sequence: Option<i64>,
+    /// Lastest request sequence number processed
+    latest_sequence: i64,
+    /// Error status to return as a response for the latest_sequence.
+    /// A Some value indicates that request processing has halted and the
+    /// latest sequence number will no longer advance.
+    error: Option<Status>,
+}
+
 impl BesBackend {
     pub fn builder(endpoint: impl Into<String>) -> Result<BesBackendBuilder> {
         BesBackendBuilder::new(endpoint.into())
@@ -229,6 +266,350 @@ impl BesForwardingService {
 
         Ok(())
     }
+
+    /// Process each incoming event, fanning it out to each backend and communicating
+    /// the current state over a watch stream that the response stream observes.
+    async fn process_request_stream(
+        mut incoming_request_stream: Streaming<PublishBuildToolEventStreamRequest>,
+        request_watch_tx: watch::Sender<BuildToolRequestStreamState>,
+        be_request_txs: Vec<mpsc::Sender<PublishBuildToolEventStreamRequest>>,
+    ) -> Result<()> {
+        let mut seq = 0;
+        let mut original_stream_id: Option<StreamId> = None;
+        let mut starting_seq: Option<i64> = None;
+        loop {
+            let request = incoming_request_stream
+                .message()
+                .await
+                .context(format!("failed to receive event from client stream"))?;
+
+            match request {
+                Some(request) => {
+                    let original_request = request.clone();
+
+                    let PublishBuildToolEventStreamRequest {
+                        ordered_build_event:
+                            Some(OrderedBuildEvent {
+                                stream_id: Some(ref stream_id),
+                                sequence_number,
+                                ..
+                            }),
+                        ..
+                    } = request
+                    else {
+                        request_watch_tx
+                            .send(BuildToolRequestStreamState {
+                                stream_id: None,
+                                starting_sequence: None,
+                                latest_sequence: seq,
+                                error: Some(Status::internal(
+                                    "ordered_build_event field(s) are missing",
+                                )),
+                            })
+                            .context("failed to send request stream status to response handler")
+                            .inspect_err(|e| error!("{e}"))?;
+                        break;
+                    };
+
+                    if original_stream_id.is_none() {
+                        // Render the stream started message here rather than below in the
+                        // response handling, which is blocked from starting if the bes
+                        // backend consumes the full stream before sending responses.
+                        info!(
+                            "[invocation_id={}] started build tool event stream at seq {}",
+                            stream_id.invocation_id, sequence_number,
+                        );
+                        original_stream_id.replace(stream_id.clone());
+                        starting_seq.replace(sequence_number);
+                        seq = sequence_number;
+                    } else {
+                        if Some(stream_id) != original_stream_id.as_ref() {
+                            error!(
+                                "[invocation_id={}] received inconsistent stream id from client",
+                                stream_id.invocation_id
+                            );
+                            request_watch_tx
+                                .send(BuildToolRequestStreamState {
+                                    stream_id: original_stream_id.clone(),
+                                    starting_sequence: starting_seq.clone(),
+                                    latest_sequence: sequence_number,
+                                    error: Some(Status::invalid_argument(
+                                        "received inconsistent stream id from client",
+                                    )),
+                                })
+                                .context("failed to send request stream status to response handler")
+                                .inspect_err(|e| error!("{e}"))?;
+                            break;
+                        }
+
+                        let next_seq = seq + 1;
+                        if sequence_number != next_seq {
+                            error!(
+                                "[invocation_id={}] received seq {sequence_number} from client but expected {next_seq}",
+                                stream_id.invocation_id,
+                            );
+                            request_watch_tx
+                                .send(BuildToolRequestStreamState {
+                                    stream_id: original_stream_id.clone(),
+                                    starting_sequence: starting_seq.clone(),
+                                    // indicate error occurrent at what should be the next sequance
+                                    latest_sequence: seq + 1,
+                                    error: Some(Status::invalid_argument(format!(
+                                        "expected seq {next_seq} but received {sequence_number}"
+                                    ))),
+                                })
+                                .context("failed to send request stream status to response handler")
+                                .inspect_err(|e| error!("{e}"))?;
+                            break;
+                        }
+                        seq = next_seq;
+                    }
+
+                    // Send the request to all backends
+                    join_all(
+                        be_request_txs
+                            .iter()
+                            .map(|be_request_tx| be_request_tx.send(original_request.clone())),
+                    )
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<()>, _>>()
+                    .context("backend receiver stream unexpectedly closed")?;
+
+                    request_watch_tx
+                        .send(BuildToolRequestStreamState {
+                            stream_id: Some(stream_id.clone()),
+                            starting_sequence: starting_seq.clone(),
+                            latest_sequence: sequence_number,
+                            error: None,
+                        })
+                        .context("failed to send request stream status to response handler")
+                        .inspect_err(|e| error!("{e}"))?;
+                }
+                None => {
+                    break;
+                }
+            };
+        }
+
+        Ok::<(), anyhow::Error>(())
+        // be_request_tx drops here, ending the backend request streams
+    }
+
+    /// Asyncronously process responses for a built tool event stream, detached from the
+    /// stream returned to the client.
+    async fn process_response_stream_async(
+        mut client: PublishBuildEventClient<Channel>,
+        request: Request<ReceiverStream<PublishBuildToolEventStreamRequest>>,
+        backend_name: String,
+    ) -> Result<()> {
+        let response = client
+            .publish_build_tool_event_stream(request)
+            .await
+            .inspect_err(|e| {
+                error!(
+                    "failed to initiate event stream with backend {}: {e}",
+                    backend_name
+                )
+            })?;
+
+        let mut response_stream = response.into_inner();
+
+        let mut stream_id: Option<StreamId> = None;
+        loop {
+            match response_stream.message().await {
+                Ok(response) => match response {
+                    Some(response) => {
+                        let PublishBuildToolEventStreamResponse {
+                            stream_id: Some(response_stream_id),
+                            ..
+                        } = response
+                        else {
+                            break;
+                        };
+
+                        stream_id.replace(response_stream_id);
+                    }
+                    None => {
+                        match stream_id {
+                            Some(stream_id) => {
+                                info!(
+                                    "[invocation_id={}] asynchronously uploaded build tool event stream to backend {}",
+                                    stream_id.invocation_id, backend_name
+                                );
+                            }
+                            None => {
+                                error!(
+                                    "asynchronous build tool event stream unexpectedly closed by backend {}",
+                                    backend_name
+                                );
+                            }
+                        }
+                        break;
+                    }
+                },
+                Err(status) => {
+                    match stream_id {
+                        Some(stream_id) => {
+                            error!(
+                                "[invocation_id={}] failed to upload asynchronous event stream to backend {}: {}",
+                                stream_id.invocation_id,
+                                backend_name,
+                                status.message()
+                            );
+                        }
+                        None => {
+                            error!(
+                                "asynchronous build tool event stream failed on first response from backend {}",
+                                backend_name
+                            );
+                        }
+                    }
+                    info!("finished asynchronous upload to backend {}", backend_name);
+                    break;
+                }
+            }
+        }
+
+        Ok::<(), anyhow::Error>(())
+    }
+
+    /// Process the response in the in the build tool event stream.
+    async fn process_response_stream(
+        mut state: BuildToolResponseStreamState,
+    ) -> Option<(
+        Result<PublishBuildToolEventStreamResponse, Status>,
+        BuildToolResponseStreamState,
+    )> {
+        // Only query the watch channel if there's something we need:
+        // - we don't have a stream id yet
+        // - we have sent responses for requests up to the current latest sequence
+        // Otherwise, continue to process responses since we have enough info for now.
+        while !state.request_stream_completed
+            && (state.stream_id.is_none() || state.next_seq > state.latest_seq)
+        {
+            // watch sender has closed -> request stream ended
+            if let Err(_) = state.request_watch_rx.changed().await {
+                state.request_stream_completed = true;
+            }
+            let request_stream_status = state.request_watch_rx.borrow_and_update();
+            state.latest_seq = request_stream_status.latest_sequence;
+            state.error_at_latest = request_stream_status.error.clone();
+
+            if state.stream_id.is_none() {
+                state.stream_id.replace(
+                    request_stream_status
+                        .stream_id
+                        .clone()
+                        .expect("expected stream_id to exist"),
+                );
+                state.next_seq = request_stream_status
+                    .starting_sequence
+                    .clone()
+                    .expect("expected starting seq to exist");
+            }
+        }
+
+        if state.error_at_latest.is_some() && state.next_seq >= state.latest_seq {
+            // The request stream failed at the latest sequence and we've processed
+            // responses up to that sequence. End the response stream with the failure
+            // it returned.
+            state.mark_controlled_exit();
+            return Some((Err(state.error_at_latest.take().unwrap()), state));
+        }
+
+        if state.request_stream_completed && state.next_seq > state.latest_seq {
+            info!(
+                "[invocation_id={}] completed build tool event stream",
+                state.iid()
+            );
+            state.mark_controlled_exit();
+            return None;
+        }
+
+        // Wait for a corresponding response from each bes backend
+        let responses = join_all(state.incoming_responses.iter_mut().map(|r| r.1.message())).await;
+
+        for (i, response) in responses.iter().enumerate() {
+            match response {
+                Ok(response) => {
+                    match response {
+                        Some(response) => {
+                            let PublishBuildToolEventStreamResponse {
+                                stream_id: Some(response_stream_id),
+                                sequence_number: response_seq,
+                            } = response
+                            else {
+                                state.mark_controlled_exit();
+                                return Some((
+                                    Err(Status::internal(format!(
+                                        "response from bes backend {} is missing stream_id",
+                                        state.incoming_responses[i].0
+                                    ))),
+                                    state,
+                                ));
+                            };
+
+                            if let Err(status) = Self::validate_build_event_ack_response(
+                                &state.incoming_responses[i].0,
+                                state.stream_id.as_ref().unwrap(),
+                                state.next_seq,
+                                response_stream_id,
+                                *response_seq,
+                            ) {
+                                state.mark_controlled_exit();
+                                return Some((Err(status), state));
+                            }
+                        }
+                        None => {
+                            error!(
+                                "[invocation_id={}] bes backend {} unexpectedly ended stream on sequence {}",
+                                state.iid(),
+                                state.incoming_responses[i].0,
+                                state.next_seq,
+                            );
+                            state.mark_controlled_exit();
+                            // End the stream for all backends. Consider making this more fault
+                            // tolerant and continue the other streams?
+                            return None;
+                        }
+                    };
+                }
+                Err(status) => {
+                    error!(
+                        "[invocation_id={}] failed to receive build event from backend {}: {status}",
+                        state.iid(),
+                        state.incoming_responses[i].0,
+                    );
+                    state.mark_controlled_exit();
+                    return Some((
+                        Err(Status::with_details_and_metadata(
+                            status.code(),
+                            format!(
+                                "{} failed event stream request: {}",
+                                state.incoming_responses[i].0,
+                                status.message()
+                            ),
+                            status.details().iter().cloned().collect(),
+                            status.metadata().clone(),
+                        )),
+                        state,
+                    ));
+                }
+            };
+        }
+
+        let sequence_number = state.next_seq;
+        state.next_seq += 1;
+
+        return Some((
+            Ok(PublishBuildToolEventStreamResponse {
+                stream_id: state.stream_id.clone(),
+                sequence_number: sequence_number,
+            }),
+            state,
+        ));
+    }
 }
 
 #[tonic::async_trait]
@@ -239,66 +620,7 @@ impl PublishBuildEvent for BesForwardingService {
         &self,
         request: Request<Streaming<PublishBuildToolEventStreamRequest>>,
     ) -> Result<Response<PublishBuildToolEventStreamStream>, Status> {
-        struct State {
-            /// Response streams from the bes backends
-            incoming_responses: Vec<(String, Streaming<PublishBuildToolEventStreamResponse>)>,
-            /// Identifier of the build stream
-            stream_id: Option<StreamId>,
-            /// Next request sequence to process
-            next_seq: i64,
-            /// The currently known latest sequence since requests are processed concurrently
-            latest_seq: i64,
-            /// An error a the latest known sequence, if any
-            error_at_latest: Option<Status>,
-            /// Whether the request stream has already completed
-            request_stream_completed: bool,
-            /// A channel used to watch the latest status of the request stream processing
-            request_watch_rx: watch::Receiver<RequestStreamStatus>,
-            /// Whether we controlled the ending of a stream, either by finishing it or returning
-            /// an error. If this is false then the grpc stream unexpectedly ended, for example,
-            /// if the client sends a RST_STREAM.
-            controlled_exit: bool,
-        }
-
-        #[derive(Debug)]
-        struct RequestStreamStatus {
-            /// The stream id, only available after the first message is received.
-            stream_id: Option<StreamId>,
-            /// The starting sequence number of the stream
-            starting_sequence: Option<i64>,
-            /// Lastest request sequence number processed
-            latest_sequence: i64,
-            /// Error status to return as a response for the latest_sequence.
-            /// A Some value indicates that request processing has halted and the
-            /// latest sequence number will no longer advance.
-            error: Option<Status>,
-        }
-
-        impl State {
-            fn iid(&self) -> &str {
-                self.stream_id
-                    .as_ref()
-                    .map(|sid| sid.invocation_id.as_str())
-                    .unwrap_or("unknown")
-            }
-
-            fn mark_controlled_exit(&mut self) {
-                self.controlled_exit = true;
-            }
-        }
-
-        impl Drop for State {
-            fn drop(&mut self) {
-                if !self.controlled_exit {
-                    error!(
-                        "[invocation_id={}] build tool event stream was cancelled",
-                        self.iid()
-                    );
-                }
-            }
-        }
-
-        let (metadata, _, mut incoming_request_stream) = request.into_parts();
+        let (metadata, _, incoming_request_stream) = request.into_parts();
 
         // Send each incoming request to the receiver stream that feeds the outgoing request
         // stream for each backend. Sending the requests must be done asynchronously from
@@ -317,143 +639,18 @@ impl PublishBuildEvent for BesForwardingService {
         // which can cause en entire bes stream to sit buffered in memory if the backend chooses
         // to not send responses before processing the full stream. To send response ACKs, we only
         // need to know to what sequence the request stream has progressed.
-        let (request_watch_tx, request_watch_rx) = watch::channel(RequestStreamStatus {
+        let (request_watch_tx, request_watch_rx) = watch::channel(BuildToolRequestStreamState {
             stream_id: None,
             starting_sequence: None,
             latest_sequence: 0,
             error: None,
         });
 
-        tokio::spawn({
-            async move {
-                let mut seq = 0;
-                let mut original_stream_id: Option<StreamId> = None;
-                let mut starting_seq: Option<i64> = None;
-                loop {
-                    let request = incoming_request_stream
-                        .message()
-                        .await
-                        .context(format!("failed to receive event from client stream"))?;
-
-                    match request {
-                        Some(request) => {
-                            let original_request = request.clone();
-
-                            let PublishBuildToolEventStreamRequest {
-                                ordered_build_event:
-                                    Some(OrderedBuildEvent {
-                                        stream_id: Some(ref stream_id),
-                                        sequence_number,
-                                        ..
-                                    }),
-                                ..
-                            } = request
-                            else {
-                                request_watch_tx
-                                    .send(RequestStreamStatus {
-                                        stream_id: None,
-                                        starting_sequence: None,
-                                        latest_sequence: seq,
-                                        error: Some(Status::internal(
-                                            "ordered_build_event field(s) are missing",
-                                        )),
-                                    })
-                                    .context(
-                                        "failed to send request stream status to response handler",
-                                    )
-                                    .inspect_err(|e| error!("{e}"))?;
-                                break;
-                            };
-
-                            if original_stream_id.is_none() {
-                                // Render the stream started message here rather than below in the
-                                // response handling, which is blocked from starting if the bes
-                                // backend consumes the full stream before sending responses.
-                                info!(
-                                    "[invocation_id={}] started build tool event stream at seq {}",
-                                    stream_id.invocation_id, sequence_number,
-                                );
-                                original_stream_id.replace(stream_id.clone());
-                                starting_seq.replace(sequence_number);
-                                seq = sequence_number;
-                            } else {
-                                if Some(stream_id) != original_stream_id.as_ref() {
-                                    error!(
-                                        "[invocation_id={}] received inconsistent stream id from client",
-                                        stream_id.invocation_id
-                                    );
-                                    request_watch_tx
-                                    .send(RequestStreamStatus {
-                                        stream_id: original_stream_id.clone(),
-                                        starting_sequence: starting_seq.clone(),
-                                        latest_sequence: sequence_number,
-                                        error: Some(Status::invalid_argument(
-                                            "received inconsistent stream id from client",
-                                        )),
-                                    })
-                                    .context(
-                                        "failed to send request stream status to response handler",
-                                    )
-                                    .inspect_err(|e| error!("{e}"))?;
-                                    break;
-                                }
-
-                                let next_seq = seq + 1;
-                                if sequence_number != next_seq {
-                                    error!(
-                                        "[invocation_id={}] received seq {sequence_number} from client but expected {next_seq}",
-                                        stream_id.invocation_id,
-                                    );
-                                    request_watch_tx
-                                    .send(RequestStreamStatus {
-                                        stream_id: original_stream_id.clone(),
-                                        starting_sequence: starting_seq.clone(),
-                                        // indicate error occurrent at what should be the next sequance
-                                        latest_sequence: seq+1,
-                                        error: Some(Status::invalid_argument(format!(
-                                            "expected seq {next_seq} but received {sequence_number}"
-                                    ))),
-                                    })
-                                    .context(
-                                        "failed to send request stream status to response handler",
-                                    )
-                                    .inspect_err(|e| error!("{e}"))?;
-                                    break;
-                                }
-                                seq = next_seq;
-                            }
-
-                            // Send the request to all backends
-                            join_all(
-                                be_request_txs.iter().map(|be_request_tx| {
-                                    be_request_tx.send(original_request.clone())
-                                }),
-                            )
-                            .await
-                            .into_iter()
-                            .collect::<Result<Vec<()>, _>>()
-                            .context("backend receiver stream unexpectedly closed")?;
-
-                            request_watch_tx
-                                .send(RequestStreamStatus {
-                                    stream_id: Some(stream_id.clone()),
-                                    starting_sequence: starting_seq.clone(),
-                                    latest_sequence: sequence_number,
-                                    error: None,
-                                })
-                                .context("failed to send request stream status to response handler")
-                                .inspect_err(|e| error!("{e}"))?;
-                        }
-                        None => {
-                            break;
-                        }
-                    };
-                }
-
-                Ok::<(), anyhow::Error>(())
-                // be_request_tx drops here, ending the backend request streams
-            }
-        });
+        tokio::spawn(Self::process_request_stream(
+            incoming_request_stream,
+            request_watch_tx,
+            be_request_txs,
+        ));
 
         // Create the response streams for each bes backend
         let mut incoming_responses: Vec<_> = Vec::new();
@@ -466,83 +663,20 @@ impl PublishBuildEvent for BesForwardingService {
             copy_request_metadata(&metadata, &mut request);
             copy_request_metadata(&backend.remote_headers, &mut request);
 
+            let backend_name = backend.name.clone();
+
             if backend.r#async {
-                let mut client = backend.client.as_ref().unwrap().clone();
-                let backend_name = backend.name.clone();
-                tokio::spawn(async move {
-                    let response = client
-                        .publish_build_tool_event_stream(request)
-                        .await
-                        .inspect_err(|e| {
-                            error!(
-                                "failed to initiate event stream with backend {}: {e}",
-                                backend_name
-                            )
-                        })?;
-
-                    let mut response_stream = response.into_inner();
-
-                    let mut stream_id: Option<StreamId> = None;
-                    loop {
-                        match response_stream.message().await {
-                            Ok(response) => match response {
-                                Some(response) => {
-                                    let PublishBuildToolEventStreamResponse {
-                                        stream_id: Some(response_stream_id),
-                                        ..
-                                    } = response
-                                    else {
-                                        break;
-                                    };
-
-                                    stream_id.replace(response_stream_id);
-                                }
-                                None => {
-                                    match stream_id {
-                                        Some(stream_id) => {
-                                            info!(
-                                                "[invocation_id={}] asynchronously uploaded build tool event stream to backend {}",
-                                                stream_id.invocation_id, backend_name
-                                            );
-                                        }
-                                        None => {
-                                            error!(
-                                                "asynchronous build tool event stream unexpectedly closed by backend {}",
-                                                backend_name
-                                            );
-                                        }
-                                    }
-                                    break;
-                                }
-                            },
-                            Err(status) => {
-                                match stream_id {
-                                    Some(stream_id) => {
-                                        error!(
-                                            "[invocation_id={}] failed to upload asynchronous event stream to backend {}: {}",
-                                            stream_id.invocation_id,
-                                            backend_name,
-                                            status.message()
-                                        );
-                                    }
-                                    None => {
-                                        error!(
-                                            "asynchronous build tool event stream failed on first response from backend {}",
-                                            backend_name
-                                        );
-                                    }
-                                }
-                                info!("finished asynchronous upload to backend {}", backend_name);
-                                break;
-                            }
-                        }
-                    }
-
-                    Ok::<(), anyhow::Error>(())
-                });
+                // Detach response processing, not returned to the client
+                let client = backend.client.as_ref().unwrap().clone();
+                tokio::spawn(Self::process_response_stream_async(
+                    client,
+                    request,
+                    backend_name,
+                ));
             } else {
+                // Store the response streams for synchronous response-by-response handling below
                 incoming_responses.push((
-                    backend.name.clone(),
+                    backend_name,
                     backend
                         .client
                         .as_ref()
@@ -561,7 +695,7 @@ impl PublishBuildEvent for BesForwardingService {
             }
         }
 
-        let state = State {
+        let state = BuildToolResponseStreamState {
             incoming_responses,
             stream_id: None,
             next_seq: 0,
@@ -572,139 +706,10 @@ impl PublishBuildEvent for BesForwardingService {
             controlled_exit: false,
         };
 
-        Ok(Response::new(Box::pin(unfold(state, |mut state| {
-            async move {
-                // Only query the watch channel if there's something we need:
-                // - we don't have a stream id yet
-                // - we have sent responses for requests up to the current latest sequence
-                // Otherwise, continue to process responses since we have enough info for now.
-                while !state.request_stream_completed
-                    && (state.stream_id.is_none() || state.next_seq > state.latest_seq)
-                {
-                    // watch sender has closed -> request stream ended
-                    if let Err(_) = state.request_watch_rx.changed().await {
-                        state.request_stream_completed = true;
-                    }
-                    let request_stream_status = state.request_watch_rx.borrow_and_update();
-                    state.latest_seq = request_stream_status.latest_sequence;
-                    state.error_at_latest = request_stream_status.error.clone();
-
-                    if state.stream_id.is_none() {
-                        state.stream_id.replace(
-                            request_stream_status
-                                .stream_id
-                                .clone()
-                                .expect("expected stream_id to exist"),
-                        );
-                        state.next_seq = request_stream_status
-                            .starting_sequence
-                            .clone()
-                            .expect("expected starting seq to exist");
-                    }
-                }
-
-                if state.error_at_latest.is_some() && state.next_seq >= state.latest_seq {
-                    // The request stream failed at the latest sequence and we've processed
-                    // responses up to that sequence. End the response stream with the failure
-                    // it returned.
-                    state.mark_controlled_exit();
-                    return Some((Err(state.error_at_latest.take().unwrap()), state));
-                }
-
-                if state.request_stream_completed && state.next_seq > state.latest_seq {
-                    info!(
-                        "[invocation_id={}] completed build tool event stream",
-                        state.iid()
-                    );
-                    state.mark_controlled_exit();
-                    return None;
-                }
-
-                // Wait for a corresponding response from each bes backend
-                let responses =
-                    join_all(state.incoming_responses.iter_mut().map(|r| r.1.message())).await;
-
-                for (i, response) in responses.iter().enumerate() {
-                    match response {
-                        Ok(response) => {
-                            match response {
-                                Some(response) => {
-                                    let PublishBuildToolEventStreamResponse {
-                                        stream_id: Some(response_stream_id),
-                                        sequence_number: response_seq,
-                                    } = response
-                                    else {
-                                        state.mark_controlled_exit();
-                                        return Some((
-                                            Err(Status::internal(format!(
-                                                "response from bes backend {} is missing stream_id",
-                                                state.incoming_responses[i].0
-                                            ))),
-                                            state,
-                                        ));
-                                    };
-
-                                    if let Err(status) = Self::validate_build_event_ack_response(
-                                        &state.incoming_responses[i].0,
-                                        state.stream_id.as_ref().unwrap(),
-                                        state.next_seq,
-                                        response_stream_id,
-                                        *response_seq,
-                                    ) {
-                                        state.mark_controlled_exit();
-                                        return Some((Err(status), state));
-                                    }
-                                }
-                                None => {
-                                    error!(
-                                        "[invocation_id={}] bes backend {} unexpectedly ended stream on sequence {}",
-                                        state.iid(),
-                                        state.incoming_responses[i].0,
-                                        state.next_seq,
-                                    );
-                                    state.mark_controlled_exit();
-                                    // End the stream for all backends. Consider making this more fault
-                                    // tolerant and continue the other streams?
-                                    return None;
-                                }
-                            };
-                        }
-                        Err(status) => {
-                            error!(
-                                "[invocation_id={}] failed to receive build event from backend {}: {status}",
-                                state.iid(),
-                                state.incoming_responses[i].0,
-                            );
-                            state.mark_controlled_exit();
-                            return Some((
-                                Err(Status::with_details_and_metadata(
-                                    status.code(),
-                                    format!(
-                                        "{} failed event stream request: {}",
-                                        state.incoming_responses[i].0,
-                                        status.message()
-                                    ),
-                                    status.details().iter().cloned().collect(),
-                                    status.metadata().clone(),
-                                )),
-                                state,
-                            ));
-                        }
-                    };
-                }
-
-                let sequence_number = state.next_seq;
-                state.next_seq += 1;
-
-                return Some((
-                    Ok(PublishBuildToolEventStreamResponse {
-                        stream_id: state.stream_id.clone(),
-                        sequence_number: sequence_number,
-                    }),
-                    state,
-                ));
-            }
-        }))))
+        Ok(Response::new(Box::pin(unfold(
+            state,
+            Self::process_response_stream,
+        ))))
     }
 
     async fn publish_lifecycle_event(
@@ -752,6 +757,34 @@ impl PublishBuildEvent for BesForwardingService {
         }
 
         Ok(Response::new(()))
+    }
+}
+
+impl BuildToolResponseStreamState {
+    /// Get the invocation ID (if known), or "unknown"
+    fn iid(&self) -> &str {
+        self.stream_id
+            .as_ref()
+            .map(|sid| sid.invocation_id.as_str())
+            .unwrap_or("unknown")
+    }
+
+    /// Indicate that the repsonse stream is ending on our terms by
+    /// explicitly ending the stream or returning an error.
+    fn mark_controlled_exit(&mut self) {
+        self.controlled_exit = true;
+    }
+}
+
+impl Drop for BuildToolResponseStreamState {
+    /// Log an error if the stream was cancelled unexpectedly
+    fn drop(&mut self) {
+        if !self.controlled_exit {
+            error!(
+                "[invocation_id={}] build tool event stream was cancelled",
+                self.iid()
+            );
+        }
     }
 }
 
