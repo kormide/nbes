@@ -205,7 +205,6 @@ Create a configuration file `config.yaml`. Then run:
 docker container run -v ./config.yaml:/config.yaml -p 9000:9000 ghcr.io/kormide/nbes:latest
 ```
 
-  TODO
 </details>
 
 <details>
@@ -229,7 +228,6 @@ Then run:
 docker compose up -d
 ```
 
-  TODO
 </details>
 
 <details>
