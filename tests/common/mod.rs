@@ -25,7 +25,7 @@ use rcgen::{CertifiedKey, generate_simple_self_signed};
 use std::{
     collections::{HashMap, VecDeque},
     env,
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
 };
@@ -38,7 +38,7 @@ use tokio::{
 };
 use tonic::{
     IntoStreamingRequest,
-    metadata::{MetadataKey, MetadataValue},
+    metadata::{AsciiMetadataKey, MetadataValue},
     transport::{Certificate, ClientTlsConfig, Identity},
 };
 use tonic::{
@@ -148,6 +148,7 @@ pub struct MockBesServer {
     url: Url,
     mock: Arc<Mutex<MockData>>,
     remote_headers: MetadataMap,
+    remote_header_files: HashMap<AsciiMetadataKey, PathBuf>,
 }
 
 /// Implements the bes server proto contract
@@ -261,6 +262,7 @@ impl MockBesServer {
             url,
             mock,
             remote_headers: MetadataMap::new(),
+            remote_header_files: HashMap::new(),
         }
     }
 
@@ -302,8 +304,15 @@ impl MockBesServer {
 
     pub fn add_remote_header(&mut self, name: &str, value: &str) {
         self.remote_headers.append(
-            MetadataKey::from_str(name).expect("invalid header name"),
+            AsciiMetadataKey::from_str(name).expect("invalid header name"),
             MetadataValue::from_str(value).expect("invalid header value"),
+        );
+    }
+
+    pub fn add_remote_header_file(&mut self, name: &str, path: &Path) {
+        self.remote_header_files.insert(
+            AsciiMetadataKey::from_str(name).expect("invalid header name"),
+            path.to_path_buf(),
         );
     }
 
@@ -312,6 +321,7 @@ impl MockBesServer {
             .unwrap()
             .name(self.name.clone())
             .remote_headers(self.remote_headers.clone())
+            .remote_header_files(self.remote_header_files.clone())
             .build()
     }
 }

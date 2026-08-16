@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+use tonic::metadata::{AsciiMetadataKey, MetadataMap, MetadataValue};
 
 /// A BES backend that forwards to other BES backends
 #[derive(Default, Debug, Parser)]
@@ -39,6 +39,11 @@ pub struct Args {
     ///   remote_header=[NAME]=[VALUE]
     ///
     ///     Remote headers (can repeat to add multiple)
+    ///
+    ///   remote_header_file=[NAME]=[PATH]
+    ///
+    ///     Remote headers with the value stored in a file (can repeat to add multiple).
+    ///     Trailing newlines will be trimmed from the value.
     ///
     ///   async=[true|false]
     ///
@@ -133,6 +138,7 @@ pub struct BesBackendArg {
     name: Option<String>,
     endpoint: String,
     remote_headers: MetadataMap,
+    remote_header_files: HashMap<AsciiMetadataKey, PathBuf>,
     r#async: bool,
     tls_client_certificate: Option<PathBuf>,
     tls_client_key: Option<PathBuf>,
@@ -209,18 +215,39 @@ impl FromStr for BesBackendArg {
             .iter()
             .map(|header| match header.split_once("=") {
                 Some((k, v)) => Ok((k.to_string(), v.to_string())),
-                None => Err(anyhow::anyhow!("invalid remote header {header}")),
+                None => Err(anyhow::anyhow!("invalid remote header arg {header}")),
             })
             .try_fold(MetadataMap::new(), |mut metadata, kv| {
                 let (k, v) = kv?;
                 metadata.append(
-                    MetadataKey::from_str(&k)
+                    AsciiMetadataKey::from_str(&k)
                         .map_err(|_| anyhow::anyhow!("invalid remote header key {k}"))?,
                     MetadataValue::from_str(&v)
                         .map_err(|_| anyhow::anyhow!("invalid remote header value {v}"))?,
                 );
                 Ok::<MetadataMap, anyhow::Error>(metadata)
             })?;
+
+        let remote_header_files = arg_map
+            .remove("remote_header_file")
+            .unwrap_or_default()
+            .iter()
+            .map(|header| match header.split_once("=") {
+                Some((k, v)) => Ok((k.to_string(), PathBuf::from(v))),
+                None => Err(anyhow::anyhow!("invalid remote header file arg {header}")),
+            })
+            .try_fold(
+                HashMap::<AsciiMetadataKey, PathBuf>::new(),
+                |mut map, kv| {
+                    let (k, v) = kv?;
+                    map.insert(
+                        AsciiMetadataKey::from_str(&k)
+                            .map_err(|_| anyhow::anyhow!("invalid remote header file key {k}"))?,
+                        PathBuf::from(v),
+                    );
+                    Ok::<HashMap<AsciiMetadataKey, PathBuf>, anyhow::Error>(map)
+                },
+            )?;
 
         let r#async: bool = arg_map
             .remove("async")
@@ -312,6 +339,7 @@ impl FromStr for BesBackendArg {
             name,
             endpoint,
             remote_headers,
+            remote_header_files,
             r#async,
             tls_client_certificate,
             tls_client_key,
@@ -328,6 +356,7 @@ impl TryInto<BesBackend> for BesBackendArg {
     fn try_into(self) -> Result<BesBackend> {
         let mut backend = BesBackend::builder(self.endpoint)?
             .remote_headers(self.remote_headers)
+            .remote_header_files(self.remote_header_files)
             .r#async(self.r#async);
 
         if let Some(name) = self.name {
@@ -356,6 +385,8 @@ impl TryInto<BesBackend> for BesBackendArg {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
@@ -422,6 +453,42 @@ mod tests {
         assert_eq!(2, headers.len());
         assert_eq!("12345", headers.get("x-foobar-key").unwrap());
         assert_eq!("cow", headers.get("moo").unwrap());
+    }
+
+    #[test]
+    fn parse_bes_backend_remote_header_file() {
+        let result = "endpoint=grpc://127.0.0.1:3000,remote_header_file=x-foobar-key=/secret"
+            .parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let headers = result.unwrap().remote_header_files;
+        assert_eq!(1, headers.len());
+        assert_eq!(
+            Path::new("/secret"),
+            headers
+                .get(&AsciiMetadataKey::from_static("x-foobar-key"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_bes_backend_remote_header_file_multiple() {
+        let result = "endpoint=grpc://127.0.0.1:3000,remote_header_file=x-foobar-key=/secret,remote_header_file=foo=bar.passwd"
+            .parse::<BesBackendArg>();
+
+        assert!(result.is_ok());
+        let headers = result.unwrap().remote_header_files;
+        assert_eq!(2, headers.len());
+        assert_eq!(
+            Path::new("/secret"),
+            headers
+                .get(&AsciiMetadataKey::from_static("x-foobar-key"))
+                .unwrap()
+        );
+        assert_eq!(
+            Path::new("bar.passwd"),
+            headers.get(&AsciiMetadataKey::from_static("foo")).unwrap()
+        );
     }
 
     #[test]

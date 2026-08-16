@@ -72,6 +72,7 @@ nbes --bes_backend=name=foo,endpoint=grpcs://foo.backend.org,async=true
 | name                   | Auto-generated if not provided | Name of the BES backend. Used to uniquely identify it, appears in logs.                                                                                                                                                                                                           |
 | endpoint               | None                           | Endpoint of the backend in the form `[SCHEME://]HOST[:PORT]`. E.g.,<br><br>`endpoint=grpcs://foo.backend.org`                                                                                                                                                                     |
 | remote_header          | []                             | Remote header to send to the backend. May be repeated to declare multiple headers. E.g.,<br><br>`remote_header=x-foobar-api-key=abcd1234`                                                                                                                                         |
+| remote_header_file    | []                             | Remote header where the value is stored in a file. May be repeated to declare multiple headers. E.g.,<br><br>`remote_header=x-foobar-api-key=/path/to/secret`                                                                                                                                         |
 | async                  | false                          | Handle responses asynchronously instead of blocking on them to send back to the client. If the stream fails, the client won't be notified. Defaults to blocking behaviour (async=false).                                                                                          |
 | tls_client_certificate | None                           | File path to a TLS PEM certificate used to identify the client to the backend. Use this when the backend requires mTLS authentication.                                                                                                                                            |
 | tls_client_key         | None                           | File path to a TLS PEM private key used to identify the client to the backend. Use this when the backend requires mTLS authentication.                                                                                                                                            |
@@ -134,6 +135,10 @@ bes_backends:
     # Remote headers to send to the backend (optional)
     remote_headers:
       <KEY>: <VALUE>
+
+    # Remote headers where the value is stored in a file (optional)
+    remote_header_files:
+      <KEY>: <PATH>
 
     # TLS cert to use for mTLS auth (optional)
     tls_client_certificate: <PATH>

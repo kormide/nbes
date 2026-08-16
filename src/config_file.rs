@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
+use tonic::metadata::{AsciiMetadataKey, MetadataKey, MetadataMap, MetadataValue};
 
 use anyhow::{Context, Result};
 use nbes::forwarding::BesBackend as RealBesBackend;
@@ -50,6 +50,8 @@ pub struct BesBackendSpec {
     pub r#async: bool,
     #[serde(default)]
     pub remote_headers: HashMap<String, String>,
+    #[serde(default)]
+    pub remote_header_files: HashMap<String, PathBuf>,
     pub tls_client_certificate: Option<PathBuf>,
     pub tls_client_key: Option<PathBuf>,
     pub connect_timeout: Option<u64>,
@@ -123,6 +125,15 @@ impl TryInto<RealBesBackend> for BesBackend {
                     );
                 }
                 backend = backend.remote_headers(metadata).r#async(spec.r#async);
+
+                let mut remote_header_files: HashMap<AsciiMetadataKey, PathBuf> = HashMap::new();
+                for (name, path) in spec.remote_header_files {
+                    remote_header_files.insert(
+                        AsciiMetadataKey::from_str(&name)
+                            .map_err(|_| anyhow::anyhow!("invalid remote header key {name}"))?,
+                        path,
+                    );
+                }
 
                 if let Some(name) = spec.name {
                     backend = backend.name(name);
@@ -286,6 +297,8 @@ bes_backends:
   async: true
   remote_headers:
     foo: bar
+  remote_header_files:
+    moo: cow.txt
   tls_client_certificate: /cert
   tls_client_key: /key
   connect_timeout: 5
@@ -305,6 +318,8 @@ bes_backends:
         assert_eq!(true, spec.r#async);
         assert_eq!(1, spec.remote_headers.len());
         assert_eq!("bar", spec.remote_headers["foo"]);
+        assert_eq!(1, spec.remote_header_files.len());
+        assert_eq!(Path::new("cow.txt"), spec.remote_header_files["moo"]);
         assert_eq!("/cert", spec.tls_client_certificate.as_ref().unwrap());
         assert_eq!("/key", spec.tls_client_key.as_ref().unwrap());
         assert_eq!(5, spec.connect_timeout.unwrap());
