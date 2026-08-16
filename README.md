@@ -6,12 +6,11 @@ This project is a workaround for Bazel not supporting multiple `--bes_backend` a
 
 ## Features
 
-* Run locally on the same host as Bazel or as a hosted service accepting many invocations
-* Configure different auth schemes (e.g., remote headers, mTLS) per backend
+* Run locally next to Bazel, optionally connecting over a unix domain socket
+* Host as a service accepting many invocations
+* Configure auth schemes per backend (e.g., remote headers, mTLS)
 * Choose which backends to [block on vs. upload](#block-vs-async) asynchronously
-* Supports incoming TLS connections
-* Connect locally over a unix domain socket
-* Forwards lifecycle events and build tool event streams
+* Supports TLS termination
 
 ## Quick start
 
@@ -30,6 +29,14 @@ bazel build //... --bes_backend=grpc://127.0.0.1:9000
 ```
 
 Run `nbes --help` to see all options or see the usage documentation below.
+
+## Block vs. async
+
+By default, nbes serializes the reponses from each backend into one response back to the client. A request succeeds if all backend requests succeed. If any backend returns a failure, so does nbes. 
+
+When `async=true`, the responses for that backend will be processed asynchronously. The client will not know whether the stream failed.
+
+You can block on select backends and upload asynchronously to others.
 
 ## Usage
 
@@ -146,14 +153,6 @@ bes_backends:
     request_buffer_size: <NUMBER>
 ```
 </details>
-
-## Block vs. async
-
-By default, nbes blocks responses back to the client until it receives a response from all backends. If any backend fails, nbes returns that failure with an annotated status message containing the name of the backend. A response only succeeds if all responses succeed.
-
-Set `async=true` on a backend process responses asynchronously without sending them back to the client.
-
-Althrough nbes will block on responses, it does not block sending messages in the request stream. Each backend will have the full request stream forwarded independently.
 
 ## Deployment
 
