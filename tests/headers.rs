@@ -2,6 +2,7 @@ use anyhow::Result;
 use futures::join;
 use nbes::Binding;
 use nbes::Config;
+use std::io::Write;
 use tempfile::NamedTempFile;
 use tonic::{Request, metadata::MetadataValue};
 
@@ -162,6 +163,52 @@ pub async fn test_stream_does_not_send_custom_header_to_wrong_backend() -> Resul
 }
 
 #[tokio::test]
+pub async fn test_stream_sends_custom_remote_headers_from_file() -> Result<()> {
+    let mut header_file = NamedTempFile::new()?;
+    writeln!(header_file, "abcd1234")?;
+    let b1_uds = NamedTempFile::new()?;
+    let mut b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+    b1.add_remote_header_file("x-api-key", header_file.path());
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend()],
+        listen: nbes_binding.clone(),
+        ..Default::default()
+    };
+
+    let shutdown_nbes = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let stream_id = build_tool_event_stream_id();
+    let request_stream = futures::stream::iter([build_tool_event(&stream_id, 1)]);
+
+    let request = Request::new(request_stream);
+    let response = client.publish_build_tool_event_stream(request).await?;
+    let mut response_stream = response.into_inner();
+
+    while let Some(_) = response_stream.message().await? {}
+
+    b1.assert(|mock| {
+        let requests = &mock.build_tool_event_stream_requests;
+        let header = requests[0].metadata.get("x-api-key");
+        assert!(header.is_some());
+        assert_eq!(header.unwrap(), "abcd1234");
+    })
+    .await;
+
+    join!(shutdown_nbes, b1.shutdown());
+
+    Ok(())
+}
+
+#[tokio::test]
 pub async fn test_lifecycle_preserves_client_headers() -> Result<()> {
     let b1_uds = NamedTempFile::new()?;
     let b1 = MockBesServer::spawn(
@@ -295,6 +342,50 @@ pub async fn test_lifecycle_does_not_send_custom_remote_headers_to_wrong_backend
     .await;
 
     join!(shutdown_nbes, b1.shutdown(), b2.shutdown());
+
+    Ok(())
+}
+
+#[tokio::test]
+pub async fn test_lifecycle_sends_custom_remote_headers_from_file() -> Result<()> {
+    let mut header_file = NamedTempFile::new()?;
+    writeln!(header_file, "abcd1234")?;
+    let b1_uds = NamedTempFile::new()?;
+    let mut b1 = MockBesServer::spawn(
+        String::from("b1"),
+        Binding::UnixDomainSocket(b1_uds.path().to_path_buf()),
+    )
+    .await;
+
+    b1.add_remote_header_file("x-api-key", header_file.path());
+
+    let nbes_uds = NamedTempFile::new()?;
+    let nbes_binding = Binding::UnixDomainSocket(nbes_uds.path().to_path_buf());
+    let config = Config {
+        bes_backends: vec![b1.to_bes_backend()],
+        listen: nbes_binding.clone(),
+        ..Default::default()
+    };
+
+    let shutdown_nbes = spawn_nbes(config).await;
+
+    let mut client = connect_client_local(nbes_binding).await?;
+
+    let build_event_stream_id = build_lifecycle_event_stream_id();
+    let request = Request::new(build_enqueued_lifecycle_event(&build_event_stream_id));
+
+    client.publish_lifecycle_event(request).await?;
+
+    b1.assert(|mock| {
+        let requests = &mock.lifecycle_requests;
+        assert_eq!(1, requests.len());
+        let header = requests[0].metadata.get("x-api-key");
+        assert!(header.is_some());
+        assert_eq!(header.unwrap(), "abcd1234");
+    })
+    .await;
+
+    join!(shutdown_nbes, b1.shutdown());
 
     Ok(())
 }

@@ -9,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use log::{error, info};
 use rand::{RngExt, distr::Alphabetic};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     pin::Pin,
@@ -25,7 +26,7 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     Request, Response, Status, Streaming,
-    metadata::{KeyAndValueRef, MetadataMap},
+    metadata::{AsciiMetadataKey, KeyAndValueRef, MetadataMap, MetadataValue},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity, Uri},
 };
 use tower::service_fn;
@@ -39,6 +40,7 @@ pub struct BesBackend {
     pub name: String,
     pub endpoint: Url,
     pub remote_headers: MetadataMap,
+    pub remote_header_files: HashMap<AsciiMetadataKey, PathBuf>,
     pub r#async: bool,
     client: Option<PublishBuildEventClient<Channel>>,
     uds_tls_uri: Option<Url>,
@@ -61,6 +63,7 @@ pub struct BesBackendBuilder {
     name: Option<String>,
     endpoint: Url,
     remote_headers: MetadataMap,
+    remote_header_files: HashMap<AsciiMetadataKey, PathBuf>,
     r#async: bool,
     tls_client_identity: Option<TlsClientKeyPair>,
     connect_timeout: Option<Duration>,
@@ -610,6 +613,43 @@ impl BesForwardingService {
             state,
         ));
     }
+
+    fn load_remote_header_files(
+        &self,
+        remote_header_files: &HashMap<AsciiMetadataKey, PathBuf>,
+        backend_name: &str,
+    ) -> Result<MetadataMap, Status> {
+        let mut metadata = MetadataMap::new();
+        for (key, path) in remote_header_files {
+            match fs::read_to_string(path) {
+                Ok(value) => match MetadataValue::from_str(value.trim_end()) {
+                    Ok(mut value) => {
+                        value.set_sensitive(true);
+                        metadata.insert(key, value);
+                    }
+                    Err(_) => {
+                        let error_msg = format!(
+                            "remote header from file {} for backend {} has invalid value",
+                            path.display(),
+                            backend_name,
+                        );
+                        error!("{error_msg}");
+                        return Err(Status::internal(error_msg));
+                    }
+                },
+                Err(e) => {
+                    let error_msg = format!(
+                        "failed to load remote header file {} for backend {}: {e}",
+                        path.display(),
+                        backend_name,
+                    );
+                    error!("{error_msg}");
+                    return Err(Status::internal(error_msg));
+                }
+            }
+        }
+        Ok(metadata)
+    }
 }
 
 #[tonic::async_trait]
@@ -660,8 +700,12 @@ impl PublishBuildEvent for BesForwardingService {
             let outbound_requests = ReceiverStream::new(be_request_rx);
             let mut request = Request::new(outbound_requests);
 
+            let remote_header_files =
+                self.load_remote_header_files(&backend.remote_header_files, &backend.name)?;
+
             copy_request_metadata(&metadata, &mut request);
             copy_request_metadata(&backend.remote_headers, &mut request);
+            copy_request_metadata(&remote_header_files, &mut request);
 
             let backend_name = backend.name.clone();
 
@@ -733,8 +777,14 @@ impl PublishBuildEvent for BesForwardingService {
 
         for backend in &self.backends {
             let mut outbound_request = Request::new(message.clone());
+
+            let remote_header_files =
+                self.load_remote_header_files(&backend.remote_header_files, &backend.name)?;
+
             copy_request_metadata(&metadata, &mut outbound_request);
             copy_request_metadata(&backend.remote_headers, &mut outbound_request);
+            copy_request_metadata(&remote_header_files, &mut outbound_request);
+
             backend
                 .client
                 .as_ref()
@@ -794,6 +844,7 @@ impl BesBackendBuilder {
             name: None,
             endpoint: Self::parse_endpoint(endpoint)?,
             remote_headers: MetadataMap::new(),
+            remote_header_files: HashMap::new(),
             r#async: false,
             tls_client_identity: None,
             connect_timeout: None,
@@ -809,6 +860,14 @@ impl BesBackendBuilder {
 
     pub fn remote_headers(mut self, remote_headers: MetadataMap) -> Self {
         self.remote_headers = remote_headers;
+        self
+    }
+
+    pub fn remote_header_files(
+        mut self,
+        remote_header_files: HashMap<AsciiMetadataKey, PathBuf>,
+    ) -> Self {
+        self.remote_header_files = remote_header_files;
         self
     }
 
@@ -851,6 +910,7 @@ impl BesBackendBuilder {
             name,
             endpoint: self.endpoint,
             remote_headers: self.remote_headers,
+            remote_header_files: self.remote_header_files,
             r#async: self.r#async,
             client: None,
             uds_tls_uri: None,
