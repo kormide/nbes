@@ -100,7 +100,8 @@ oci.pull(
     ],
 )
 
-# For each oci.pull call, repeat the "name" here to expose them as dependencies.
 use_repo(oci, "distroless_cc")
+use_repo(oci, "distroless_cc_linux_amd64")
+use_repo(oci, "distroless_cc_linux_arm64")
 
 include("//:proto.MODULE.bazel")
