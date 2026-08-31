@@ -26,6 +26,9 @@ common:release --stripopt=--strip-all
 common:release --stamp
 common:release --workspace_status_command "${PWD}/workspace_status.sh"
 
+# Stop third party rulesets from collecting telemetry
+common --repo_env=DO_NOT_TRACK=1
+
 ########################
 # User preferences
 # Load any settings & overrides specific to the current user from `user.bazelrc`.
