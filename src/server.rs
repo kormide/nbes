@@ -3,8 +3,12 @@ use build_proto::google::devtools::build::v1::publish_build_event_server::{
     PublishBuildEvent, PublishBuildEventServer,
 };
 use std::{fs, path::Path, time::Duration};
+
+#[cfg(not(target_os = "windows"))]
 use tokio::net::UnixListener;
+#[cfg(not(target_os = "windows"))]
 use tokio_stream::wrappers::UnixListenerStream;
+
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig, server::Router};
 
 use crate::Binding;
@@ -34,15 +38,24 @@ impl GrpcBesServer {
                     .serve_with_shutdown(address, shutdown_signal)
                     .await?;
             }
+            #[allow(unused_variables)]
             Binding::UnixDomainSocket(socket_path) => {
-                if socket_path.exists() {
-                    fs::remove_file(&socket_path).context("failed to remove existing socket")?;
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if socket_path.exists() {
+                        fs::remove_file(&socket_path)
+                            .context("failed to remove existing socket")?;
+                    }
+                    let socket_listener = UnixListener::bind(socket_path)?;
+                    let socket_stream = UnixListenerStream::new(socket_listener);
+                    self.router
+                        .serve_with_incoming_shutdown(socket_stream, shutdown_signal)
+                        .await?;
                 }
-                let socket_listener = UnixListener::bind(socket_path)?;
-                let socket_stream = UnixListenerStream::new(socket_listener);
-                self.router
-                    .serve_with_incoming_shutdown(socket_stream, shutdown_signal)
-                    .await?;
+                #[cfg(target_os = "windows")]
+                {
+                    anyhow::bail!("unix domain sockets are not supported on Windows");
+                }
             }
         }
 

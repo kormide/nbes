@@ -35,8 +35,10 @@ jobs:
         run: |
           mv bazel-out/aarch64-apple-darwin-opt/bin/nbes nbes_darwin_arm64
           mv bazel-out/aarch64-unknown-linux-musl-opt/bin/nbes nbes_linux_arm64
+          mv bazel-out/aarch64-pc-windows-gnullvm-opt/bin/nbes.exe nbes_windows_arm64.exe
           mv bazel-out/x86_64-apple-darwin-opt/bin/nbes nbes_darwin_amd64
           mv bazel-out/x86_64-unknown-linux-musl-opt/bin/nbes nbes_linux_amd64
+          mv bazel-out/x86_64-pc-windows-gnullvm-opt/bin/nbes.exe nbes_windows_amd64.exe
       - name: release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
