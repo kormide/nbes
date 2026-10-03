@@ -5,6 +5,7 @@ use build_proto::google::devtools::build::v1::{
     publish_build_event_server::PublishBuildEvent,
 };
 use futures::{Stream, future::join_all, stream::unfold};
+#[cfg(not(target_os = "windows"))]
 use hyper_util::rt::TokioIo;
 use log::{error, info};
 use rand::{RngExt, distr::Alphabetic};
@@ -16,19 +17,22 @@ use std::{
     str::FromStr,
     time::Duration,
 };
-use tokio::{
-    net::UnixStream,
-    sync::{
-        mpsc::{self},
-        watch::{self},
-    },
+#[cfg(not(target_os = "windows"))]
+use tokio::net::UnixStream;
+use tokio::sync::{
+    mpsc::{self},
+    watch::{self},
 };
+
 use tokio_stream::wrappers::ReceiverStream;
+#[cfg(not(target_os = "windows"))]
+use tonic::transport::Uri;
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{AsciiMetadataKey, KeyAndValueRef, MetadataMap, MetadataValue},
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity, Uri},
+    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
+#[cfg(not(target_os = "windows"))]
 use tower::service_fn;
 use url::Url;
 
@@ -123,6 +127,10 @@ impl BesBackend {
             ["grpcs", "https"].contains(&self.endpoint.scheme()) || self.uds_tls_uri.is_some();
         let use_uds = self.endpoint.scheme() == "unix";
 
+        if cfg!(target_os = "windows") {
+            anyhow::bail!("unix domain sockets are not supported on Windows");
+        }
+
         // Tonic doesn't appear to like "grpcs" as a scheme. Swap it with
         // https for the client connection to avoid FRAME_SIZE_ERROR errors.
         let mut endpoint = self.endpoint.clone();
@@ -191,15 +199,23 @@ impl BesBackend {
         // .keep_alive_timeout(duration)
 
         let channel = if use_uds {
+            #[allow(unused_variables)]
             let uds_path = endpoint.to_file_path().map_err(|_| {
                 anyhow::anyhow!("failed to convert url {} to file path", endpoint.as_str())
             })?;
-            channel.connect_with_connector_lazy(service_fn(move |_: Uri| {
-                let uds_path = uds_path.clone();
-                async move {
-                    Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
-                }
-            }))
+            #[cfg(not(target_os = "windows"))]
+            {
+                channel.connect_with_connector_lazy(service_fn(move |_: Uri| {
+                    let uds_path = uds_path.clone();
+                    async move {
+                        Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
+                    }
+                }))
+            }
+            #[cfg(target_os = "windows")]
+            {
+                anyhow::bail!("unix domain sockets are not supported on Windows");
+            }
         } else {
             channel.connect_lazy()
         };

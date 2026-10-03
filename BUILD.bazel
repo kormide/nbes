@@ -185,8 +185,10 @@ buildifier(
 
 RELEASE_PLATFORMS = [
     "@rules_rs//rs/platforms:aarch64-apple-darwin",
+    "@rules_rs//rs/platforms:aarch64-pc-windows-gnullvm",
     "@rules_rs//rs/platforms:aarch64-unknown-linux-musl",
     "@rules_rs//rs/platforms:x86_64-apple-darwin",
+    "@rules_rs//rs/platforms:x86_64-pc-windows-gnullvm",
     "@rules_rs//rs/platforms:x86_64-unknown-linux-musl",
 ]
 
